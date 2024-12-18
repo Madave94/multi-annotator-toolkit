@@ -1,4 +1,4 @@
-test_script.ipynb
+*.ipynb
 .ipynb_checkpoints
 .idea
 __pycache__/
