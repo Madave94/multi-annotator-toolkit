@@ -1,0 +1,4 @@
+test_script.ipynb
+.ipynb_checkpoints
+.idea
+__pycache__/
