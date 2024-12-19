@@ -12,9 +12,13 @@ Install this plugin:
 ```
 fiftyone plugins download https://github.com/Madave94/multi-annotator-toolkit
 ```
-Check if plugin is installed
+Check if plugin is installed:
 ```
 fiftyone plugins list
+```
+Install plugin dependencies as described in [requirements.txt](requirements.txt) using auto-install:
+```
+fiftyone plugins requirements @madave94/multi_annotator_toolkit --install
 ```
 
 ## Multi-Annotator-Toolkit Hello World using LVIS
@@ -24,7 +28,7 @@ Download the consistency data:
 
 Unpack the data.
 
-You can copy this example into a python script and run it:
+You can copy this example into a python script, **change the data_root variable** and run it:
 
 ```
 import fiftyone as fo
@@ -34,7 +38,7 @@ name = "LVIS-Multi-Annoated-Subset"
 if fo.dataset_exists(name):
     fo.delete_dataset(name)
 
-data_root = "/path/to/downloaded/folder" # <---- change this
+data_root = "/path/to/downloaded/folder/" # <---- change this
 labels_path = data_root + "lvis_v1.0_val_doubly_annos_subset200.json"
 dataset = fo.Dataset.from_dir(
     dataset_type=fo.types.COCODetectionDataset,
