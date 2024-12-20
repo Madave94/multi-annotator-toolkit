@@ -534,16 +534,11 @@ class CalculateIaa(foo.Operator):
             default=list(available_types)[0],
         )
 
-        # Create a field for IoU Thresholds input
-        inputs.str(
+        inputs.list(
             "iou_thresholds",
+            types.Number(min=0.01, max=0.99, float=True),
             label="IoU Thresholds",
-            description="Enter IoU thresholds separated by a semicolon (;). Values should range between 0.01 and 0.99.",
-            placeholder="e.g., 0.5;0.75",
-            validation={
-                "pattern": r"^(\d*(\.\d+)?([;,]\s?\d*(\.\d+)?)*$)",
-                "message": "Enter values separated by semicolons, between 0.01 and 0.99."
-            },
+            description="Enter IoU thresholds. Values should range between 0.01 and 0.99.",
         )
 
         # Add execution mode (if applicable to your use case)
@@ -564,10 +559,7 @@ class CalculateIaa(foo.Operator):
 
         ann_type = ctx.params.get("annotation_type")
 
-        iou_thresholds = [
-            float(iou.strip().replace(',', '.'))
-            for iou in ctx.params.get("iou_thresholds").split(";")
-        ]
+        iou_thresholds = ctx.params.get("iou_thresholds")
 
         if ann_type == "bounding box":
             field_name = "bbox"
