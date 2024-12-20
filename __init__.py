@@ -6,6 +6,7 @@ from collections import defaultdict
 import os
 import json
 from tqdm import tqdm
+import traceback
 from kalphacv import reliability_data, krippendorff_alpha
 
 class LoadMultiAnnotatedData(foo.Operator):
@@ -439,6 +440,8 @@ class CalculateIaa(foo.Operator):
         params = dict(sample_selection=sample_selection, annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate)
         return foo.execute_operator(self.uri, ctx, params=params)
 
+
+
     def resolve_input(self, ctx):
         # --- for SDK call ---
         iou_thresholds = ctx.params.get("iou_thresholds", None)
@@ -465,41 +468,57 @@ class CalculateIaa(foo.Operator):
             default="entire dataset"
         )
 
-        # Check available annotation types (bbox, polygon, mask)
-        available_types = set()
         dataset = ctx.dataset  # Access the dataset from context
 
         # Handle sample selection choice
         if ctx.params.get("sample_selection") == "current view":
             dataset = dataset.view()
 
-        for sample in dataset:
-            raters_by_image = sample.get_field("rater_list")
-
+        # Check available annotation types (bbox, polygon, mask)
+        available_types = ctx.params.get("available_types", [])
+        if available_types == []:
+            sample = dataset.first()
             # Check if rater list exists
-            if raters_by_image is None:
-                continue
+            if not sample.has_field("rater_list"):
+                inputs = types.Object()
+                prop = inputs.view("message", types.Error(
+                    label="No multi-annotated data found."),
+                    description="Please run `Load Multi Annotated Data` first or check if your annotations file is properly"
+                                " formatted.",
+                                   )
+                prop.invalid = True
+                return types.Property(inputs)
+
+            raters_by_image = sample.get_field("rater_list")
 
             # Check for bounding boxes
             for rater_id in raters_by_image:
                 detections = sample.get_field(f"detections_{rater_id}")
                 if detections is not None:
-                    available_types.add("bounding box")
+                    available_types.append("bounding box")
                     break
 
             # Check for segmentations (masks and polygons)
+            found_segmentation = False
             for rater_id in raters_by_image:
                 segmentations = sample.get_field(f"segmentations_{rater_id}")
                 if segmentations is not None:
                     if hasattr(segmentations, "detections"):
                         for detection in segmentations.detections:
                             if "bounding_box" in detection:
-                                available_types.add("mask")
+                                available_types.append("mask")
+                                found_segmentation = True
                                 break
+                        if found_segmentation:
+                            break
                     if hasattr(segmentations, "polylines"):
                         for polyline in segmentations.polylines:
-                            available_types.add("polygon")
+                            available_types.append("polygon")
+                            found_segmentation = True
                             break
+                        if found_segmentation:
+                            break
+            ctx.params["available_types"] = available_types
 
         # Create checkboxes for available annotation types
         annotation_types_radio_group = types.RadioGroup()
