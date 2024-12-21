@@ -705,6 +705,11 @@ class IAAPanel(foo.Panel):
                                     "marker": {"color": "#FF6D05"},
                                     "xbins": {"end": 1.0, "size": 0.1},
                                     }
+
+        ctx.panel.state.mean_msg = "Mean for {} annotations wih iou-threshold {}: **{:.3f}**".format(ctx.panel.state.ann_type_selection,
+                                                                                                 ctx.panel.state.iou_selection,
+                                                                                                 (sum(values) / len(values)))
+
         ctx.ops.split_panel("iaa_panel", layout="horizontal")
 
     def change_ann_type(self, ctx):
@@ -782,6 +787,9 @@ class IAAPanel(foo.Panel):
             on_click=self.on_histogram_click,
 
         )
+
+        v_stack = panel.v_stack("v_stack", align_x="center", align_y="center", width=75)
+        v_stack.md(ctx.panel.state.mean_msg)
 
         return types.Property(
             panel,
