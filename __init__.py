@@ -435,12 +435,10 @@ class CalculateIaa(foo.Operator):
             allow_delegated_execution=True,
         )
 
-    def __call__(self, sample_collection, sample_selection, annotation_type, iou_thresholds, delegate=False):
+    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False):
         ctx = dict(view=sample_collection.view())
-        params = dict(sample_selection=sample_selection, annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate)
+        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate)
         return foo.execute_operator(self.uri, ctx, params=params)
-
-
 
     def resolve_input(self, ctx):
         # --- for SDK call ---
@@ -452,27 +450,7 @@ class CalculateIaa(foo.Operator):
 
         inputs = types.Object()
 
-        # whole dataset or current view button
-        sample_selection = ["entire dataset", "current view"]
-
-        sample_selection_radio_group = types.RadioGroup()
-        for selection in sample_selection:
-            sample_selection_radio_group.add_choice(selection, label=selection)
-
-        inputs.enum(
-            "sample_selection",
-            sample_selection_radio_group.values(),
-            label="Select samples",
-            description="Choose which samples to calculate the IAA for:",
-            types=types.RadioView(),
-            default="entire dataset"
-        )
-
         dataset = ctx.dataset  # Access the dataset from context
-
-        # Handle sample selection choice
-        if ctx.params.get("sample_selection") == "current view":
-            dataset = dataset.view()
 
         # Check available annotation types (bbox, polygon, mask)
         available_types = ctx.params.get("available_types", [])
@@ -553,36 +531,27 @@ class CalculateIaa(foo.Operator):
         # Access the dataset
         dataset = ctx.dataset
 
-        # Handle sample selection choice
-        if ctx.params.get("sample_selection") == "current view":
-            dataset = dataset.view()
-
         ann_type = ctx.params.get("annotation_type")
 
         iou_thresholds = ctx.params.get("iou_thresholds")
 
-        if ann_type == "bounding box":
-            field_name = "bbox"
-        elif ann_type == "mask":
-            field_name = "segm"
-        elif ann_type == "polygon":
-            field_name = "segm"
-        else:
-            raise Exception(f"Invalid annotation type: {ann_type}")
-
         # Add the field to the dataset if it does not already exist
-        field_path = f"{field_name}_iaa"
-        if not dataset.has_sample_field(field_path):
+        if not dataset.has_sample_field("iaa"):
             dataset.add_sample_field(
-                field_path,
+                "iaa",
                 fo.DictField,
                 subfield=fo.FloatField
             )
 
+        if "iaa_analyzed" not in dataset.info:
+            dataset.info["iaa_analyzed"] = []
+            dataset.save()
         for iou in iou_thresholds:
             iou_str = str(iou).replace(".", ",")
-            if not dataset.has_sample_field(f"{field_path}_iou_{iou_str}"):
-                dataset.add_sample_field(f"{field_path}_iou_{iou_str}", fo.FloatField)
+            key = ann_type + "-" + iou_str
+            if key not in dataset.info["iaa_analyzed"]:
+                dataset.info["iaa_analyzed"].append(key)
+                dataset.save()
 
         alphas = defaultdict(list)
         for sample in tqdm(dataset, "Calculating IAA for samples"):
@@ -637,13 +606,12 @@ class CalculateIaa(foo.Operator):
                                                   iou_threshold)
                 alpha = krippendorff_alpha.calculate_alpha(coincidence_matrix)
 
-                iaa_dict = sample[field_path]
+                iaa_dict = sample["iaa"]
                 if iaa_dict is None:
                     iaa_dict = {}
-                iaa_dict[str(iou_threshold)] = alpha
                 iou_str = str(iou_threshold).replace(".", ",")
-                sample[f"{field_path}_iou_{iou_str}"] = alpha
-                sample[field_path] = iaa_dict
+                iaa_dict[ann_type + "-" + iou_str] = alpha
+                sample["iaa"] = iaa_dict
                 sample.save()
                 alphas[str(iou_threshold)].append(alpha)
 
@@ -653,6 +621,10 @@ class CalculateIaa(foo.Operator):
             message += f"\n\tIoU {iou_threshold}: {u_k_alpha}"
 
         print(message)
+
+        ctx.ops.reload_dataset()
+
+        ctx.ops.open_panel("iaa_panel")
 
         return {"message": message}
 
@@ -699,6 +671,132 @@ def _execution_mode(ctx, inputs):
             ),
         )
 
+class IAAPanel(foo.Panel):
+    @property
+    def config(self):
+        return foo.PanelConfig(
+            name="iaa_panel",
+            label="IAA Panel",
+            allow_multiple=False,
+            surfaces="grid",
+            help_markdown="A panel to filter IAA values in the views and show summary statistics.",
+        )
+
+    def on_load(self, ctx):
+        iaa_list = ctx.dataset.info["iaa_analyzed"]
+
+        iaa_dict = defaultdict(list)
+        for iaa in iaa_list:
+            ann_type, iou = iaa.split("-")
+            iaa_dict[ann_type].append(iou)
+
+        ctx.panel.state.iaa_dict = iaa_dict
+        if ctx.panel.state.ann_type_selection is None:
+            ctx.panel.state.ann_type_selection = list(iaa_dict.keys())[0]
+        if ctx.panel.state.iou_selection is None:
+            ctx.panel.state.iou_selection = iaa_dict[ctx.panel.state.ann_type_selection][0]
+
+        values = self.get_values(ctx)
+        ctx.panel.state.plot_title = "Inter-Annotat-Agreement: {} {}".format(
+            ctx.panel.state.ann_type_selection,
+            ctx.panel.state.iou_selection)
+        ctx.panel.data.histogram = {"x": values,
+                                    "type": "histogram",
+                                    "marker": {"color": "#FF6D05"},
+                                    "xbins": {"end": 1.0, "size": 0.1},
+                                    }
+        ctx.ops.split_panel("iaa_panel", layout="horizontal")
+
+    def change_ann_type(self, ctx):
+        ctx.panel.state.ann_type_selection = ctx.params["value"]
+
+    def change_iou_value(self, ctx):
+        ctx.panel.state.iou_selection = ctx.params["value"]
+
+    def get_values(self, ctx):
+        values = []
+        for sample in ctx.dataset:
+            values.append(
+                sample["iaa"][ctx.panel.state.ann_type_selection + "-" + ctx.panel.state.iou_selection]
+            )
+        return values
+
+    def on_histogram_click(self, ctx):
+        bin_range = ctx.params.get("range")
+        min_value = bin_range[0]
+        max_value = bin_range[1]
+
+        ann_type = ctx.panel.state.ann_type_selection
+        iou_value = ctx.panel.state.iou_selection
+        field_name = "iaa.{}-{}".format(ann_type, iou_value)
+
+        view = ctx.dataset.match((F(field_name) >= min_value) & (F(field_name) <= max_value))
+
+        if view is not None:
+            ctx.ops.set_view(view=view)
+
+    def render(self, ctx):
+        panel = types.Object()
+
+        h_stack = panel.h_stack("h_stack", align_x="center", align_y="center", gap=5)
+
+        dropdown_ann_type = types.DropdownView()
+        for ann_type in ctx.panel.state.iaa_dict.keys():
+            dropdown_ann_type.add_choice(ann_type, label=ann_type)
+
+        h_stack.view(
+            "dropdown_ann_type",
+            view=dropdown_ann_type,
+            label="Annotation Type",
+            on_change=self.change_ann_type
+        )
+
+        dropdown_iou_value = types.DropdownView()
+        for iou_type in ctx.panel.state.iaa_dict[ctx.panel.state.ann_type_selection]:
+            dropdown_iou_value.add_choice(iou_type, label=iou_type)
+
+        h_stack.view(
+            "dropdown_iou_value",
+            view=dropdown_iou_value,
+            label="IoU Threshold",
+            on_change=self.change_iou_value
+       )
+
+        h_stack.btn(
+            "load",
+            label="load with set values",
+            on_click=self.on_load
+        )
+
+        panel.plot(
+            "histogram",
+            layout={
+                "title": {
+                    "text": ctx.panel.state.plot_title,
+                    "automargin": True,
+                },
+                "xaxis": {"title": "K-Alpha", },
+                "yaxis": {"title": "Count"},
+                "bargap": 0.05,
+            },
+            on_click=self.on_histogram_click,
+
+        )
+
+        return types.Property(
+            panel,
+            view=types.GridView(
+                align_x="center",
+                align_y="center",
+                #orientation="vertical",
+                height=100,
+                width=100,
+                gap=2,
+                padding=0,
+            )
+        )
+
 def register(plugin):
     plugin.register(LoadMultiAnnotatedData)
     plugin.register(CalculateIaa)
+    plugin.register(IAAPanel)

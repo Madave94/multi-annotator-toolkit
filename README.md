@@ -52,7 +52,8 @@ dataset = fo.Dataset.from_dir(
 load_multi_annotated_data = foo.get_operator("@madave94/multi_annotator_toolkit/load_multi_annotated_data")
 await load_multi_annotated_data(dataset, labels_path)
 calculate_iaa = foo.get_operator("@madave94/multi_annotator_toolkit/calculate_iaa")
-await calculate_iaa(dataset, "entire dataset", "bounding box", "0,5")
+await calculate_iaa(dataset, "bounding box", [0.5, 0.6])
+await calculate_iaa(dataset, "polygon", [0.8, 0.9])
 session = fo.launch_app(dataset, auto=False)
 ```
 
