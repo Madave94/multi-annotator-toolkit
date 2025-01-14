@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="166.32381mm"
+   height="137.3847mm"
+   viewBox="0 0 166.32384 137.38472"
+   version="1.1"
+   id="svg5"
+   sodipodi:docname="icon-light.svg"
+   inkscape:version="1.1.2 (0a00cf5339, 2022-02-04)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview7"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:pageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="true"
+     inkscape:document-units="mm"
+     showgrid="false"
+     inkscape:zoom="1.0633188"
+     inkscape:cx="265.67761"
+     inkscape:cy="248.27926"
+     inkscape:window-width="1592"
+     inkscape:window-height="831"
+     inkscape:window-x="4"
+     inkscape:window-y="28"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="layer1"
+     showguides="false" />
+  <defs
+     id="defs2" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-5.2269573,-37.62373)">
+    <rect
+       style="opacity:1;fill:none;stroke:#000000;stroke-width:8;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:48, 16;stroke-dashoffset:0;stroke-opacity:1"
+       id="rect846"
+       width="87.438446"
+       height="87.165947"
+       x="9.2269573"
+       y="83.842484" />
+    <rect
+       style="opacity:1;fill:none;stroke:#000000;stroke-width:8;stroke-miterlimit:4;stroke-dasharray:8, 16;stroke-dashoffset:0;stroke-opacity:1"
+       id="rect892"
+       width="97.862"
+       height="84.393089"
+       x="40.518536"
+       y="41.62373" />
+    <rect
+       style="fill:none;stroke:#000000;stroke-width:8;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1"
+       id="rect892-3"
+       width="94.117668"
+       height="83.652245"
+       x="73.43309"
+       y="54.684151" />
+  </g>
+</svg>

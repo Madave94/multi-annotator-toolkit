@@ -1,12 +1,19 @@
 import fiftyone as fo
 import fiftyone.operators as foo
+import numpy as np
 from fiftyone.operators import types
 from fiftyone import ViewField as F
 from collections import defaultdict
 import os
 import json
 from tqdm import tqdm
+import random
 import traceback
+from pycocotools import mask as coco_mask
+import numpy as np
+from copy import deepcopy
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
 from kalphacv import reliability_data, krippendorff_alpha
 
 class LoadMultiAnnotatedData(foo.Operator):
@@ -157,6 +164,8 @@ class LoadMultiAnnotatedData(foo.Operator):
             name="load_multi_annotated_data",
             label="Load Multi Annotated Data",
             description="This loads the multi-annotated meta-data like the rater-list into the samples and splits up the annotations by rater_id.",
+            light_icon="/assets/icon-light.svg",
+            dark_icon="/assets/icon-dark.svg",
         )
 
     def __call__(self, sample_collection, annos_path, overwrite=False, num_workers=False, delegate=False):
@@ -413,7 +422,7 @@ def split_annotations_by_rater(dataset, source_field, field_prefix=None):
         samples_processed += 1
 
     # Optionally, remove the source field from the dataset schema if empty
-    if dataset.match(F(source_field).exists()).count() == 0:
+    if dataset.match(F(source_field).exp()).count() == 0:
         dataset.delete_sample_field(source_field)
 
     # Return counts for reporting
@@ -433,6 +442,8 @@ class CalculateIaa(foo.Operator):
             description="Calculates the Inter-Annotator-Agreement",
             allow_immediate_execution=True,
             allow_delegated_execution=True,
+            light_icon="/assets/icon-light.svg",
+            dark_icon="/assets/icon-dark.svg",
         )
 
     def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False):
@@ -641,36 +652,6 @@ class CalculateIaa(foo.Operator):
         return types.Property(outputs)
 
 
-def _execution_mode(ctx, inputs):
-    delegate = ctx.params.get("delegate", False)
-
-    if delegate:
-        description = "Uncheck this box to execute the operation immediately"
-    else:
-        description = "Check this box to delegate execution of this task"
-
-    inputs.bool(
-        "delegate",
-        default=False,
-        label="Delegate execution?",
-        description=description,
-        view=types.CheckboxView(),
-    )
-
-    if delegate:
-        inputs.view(
-            "notice",
-            types.Notice(
-                label=(
-                    "You've chosen delegated execution. Note that you must "
-                    "have a delegated operation service running in order for "
-                    "this task to be processed. See "
-                    "https://docs.voxel51.com/plugins/index.html#operators "
-                    "for more information"
-                )
-            ),
-        )
-
 class IAAPanel(foo.Panel):
     @property
     def config(self):
@@ -680,6 +661,8 @@ class IAAPanel(foo.Panel):
             allow_multiple=False,
             surfaces="grid",
             help_markdown="A panel to filter IAA values in the views and show summary statistics.",
+            light_icon="/assets/icon-light.svg",
+            dark_icon="/assets/icon-dark.svg",
         )
 
     def on_load(self, ctx):
@@ -702,7 +685,7 @@ class IAAPanel(foo.Panel):
             ctx.panel.state.iou_selection)
         ctx.panel.data.histogram = {"x": values,
                                     "type": "histogram",
-                                    "marker": {"color": "#FF6D05"},
+                                    "marker": {"color": "#FF6D05"}, # gray #808080
                                     "xbins": {"end": 1.0, "size": 0.1},
                                     }
 
@@ -804,7 +787,474 @@ class IAAPanel(foo.Panel):
             )
         )
 
+class CalculatemmAP(foo.Operator):
+    @property
+    def config(self):
+        return foo.OperatorConfig(
+            name="calculate_mmap",
+            label="Calculate modified mean average precision (mmAP)",
+            description="Calculates the modified mean Average Precision for multi-annotated dataset with a maximum of 2 annotators per sample",
+            allow_immediate_execution=True,
+            allow_delegated_execution=True,
+            dynamic=True,
+            light_icon="/assets/icon-light.svg",
+            dark_icon="/assets/icon-dark.svg",
+        )
+
+    def resolve_input(self, ctx):
+        inputs = types.Object()
+
+        dataset = ctx.dataset
+
+        # Check available annotation types (bbox, polygon, mask)
+        available_types = ctx.params.get("available_types", [])
+        if available_types == []:
+            sample = dataset.first()
+            # Check if rater list exists
+            if not sample.has_field("rater_list"):
+                inputs = types.Object()
+                prop = inputs.view("message", types.Error(
+                    label="No multi-annotated data found."),
+                    description="Please run `Load Multi Annotated Data` first or check if your annotations file is properly"
+                                " formatted.",
+                                   )
+                prop.invalid = True
+                return types.Property(inputs)
+
+            raters_by_image = sample.get_field("rater_list")
+
+            # Check for bounding boxes
+            for rater_id in raters_by_image:
+                detections = sample.get_field(f"detections_{rater_id}")
+                if detections is not None:
+                    available_types.append("bounding box")
+                    break
+
+            # Check for segmentations (masks and polygons)
+            found_segmentation = False
+            for rater_id in raters_by_image:
+                segmentations = sample.get_field(f"segmentations_{rater_id}")
+                if segmentations is not None:
+                    if hasattr(segmentations, "detections"):
+                        for detection in segmentations.detections:
+                            if "bounding_box" in detection:
+                                available_types.append("mask")
+                                found_segmentation = True
+                                break
+                        if found_segmentation:
+                            break
+                    if hasattr(segmentations, "polylines"):
+                        for polyline in segmentations.polylines:
+                            available_types.append("polygon")
+                            found_segmentation = True
+                            break
+                        if found_segmentation:
+                            break
+            ctx.params["available_types"] = available_types
+
+        # Create checkboxes for available annotation types
+        annotation_types_radio_group = types.RadioGroup()
+        for annotation_type in available_types:
+            annotation_types_radio_group.add_choice(annotation_type, label=annotation_type)
+
+        inputs.enum(
+            "annotation_type",
+            annotation_types_radio_group.values(),
+            label="Annotation Type",
+            description="Select the annotation type to include in the analysis:",
+            types=types.RadioView(),
+            default=list(available_types)[0],
+        )
+
+        inputs.list(
+            "iou_thresholds",
+            types.Number(min=0.01, max=0.99, float=True),
+            label="IoU Thresholds",
+            description="Enter IoU thresholds. Values should range between 0.01 and 0.99.",
+        )
+
+        dataset_scope = ["Full", "Partial"]
+        dataset_scope_group = types.RadioGroup()
+
+        for choice in dataset_scope:
+            dataset_scope_group.add_choice(choice, label=choice)
+
+        inputs.enum(
+            "dataset_scope",
+            dataset_scope_group.values(),
+            label="Dataset Scope",
+            description="Select if you want to analyze the full dataset or run sampling from the dataset. Sampling "
+                        "allows you to run multiple evaluations to evaluate a confidence interval.",
+            view=types.RadioView(),
+            default=dataset_scope[0]
+        )
+
+        dataset_scope_choice = ctx.params.get("dataset_scope", None)
+
+        if dataset_scope_choice == "Partial":
+
+            inputs.md("""
+                         For the selected **Partial** dataset scope, the sampling procedure applies **bootstrapping**, 
+                         where `k` replicates of size `n` are drawn from the dataset `N` with replacement, using a fixed 
+                         random seed (`s`) for reproducibility.   
+                         Please consider deligating this operation, since for larger k or n the processing might take 
+                         multiple hours.
+                      """)
+
+            inputs.int(
+                "subset_n",
+                label="Subset Size (n)",
+                description="Size of the dataset sample replicate n, with maximum size: dataset size - 1",
+                default=int(len(dataset)*0.1),
+                min=1,
+                max=len(dataset)-1,
+                required=True
+            )
+
+            inputs.int(
+                "sampling_k",
+                label="Number of Samples (k)",
+                description="The number of times the sampling procedure is repeated.",
+                default=1000,
+                min=2,
+                required=True
+            )
+
+            inputs.int(
+                "random_seed_s",
+                label="Random Seed (s)",
+                description="Select a random seed used to sample from the dataset. Available for reproduction purposes.",
+                default=42,
+                min=0,
+                required=True
+            )
+
+        _execution_mode(ctx, inputs)
+        return types.Property(inputs)
+
+    def resolve_delegation(self, ctx):
+        return ctx.params.get("delegate", False)
+
+    def execute(self, ctx):
+        dataset = ctx.dataset
+
+        ann_type = ctx.params.get("annotation_type")
+        iou_thresholds = ctx.params.get("iou_thresholds")
+        dataset_scope_choice = ctx.params.get("dataset_scope")
+        subset_n = ctx.params.get("subset_n", None)
+        sampling_k = ctx.params.get("sampling_k", None)
+        random_seed_s = ctx.params.get("random_seed_s", None)
+
+        if "mmAPs" not in dataset.info:
+            dataset.info["mmAPs"] = {}
+
+        mmaps = dataset.info["mmAPs"]
+
+        categories = [{"id": idx, "name": cls_name} for idx, cls_name in enumerate(dataset.default_classes)]
+        annotations_dict = {"images": [], "0": [], "1": []}
+
+        annotation_id = 0
+        for image_idx, sample in enumerate(dataset):
+            raters_by_image = sample.get_field("rater_list")
+            height, width = sample.metadata.height, sample.metadata.width
+            filename = sample.filename
+            annotations_dict["images"].append({
+                "id": image_idx,
+                "height": height,
+                "width": width,
+                "file_name": filename
+            })
+            for annotator_idx, rater_id in enumerate(raters_by_image):
+                if ann_type == "bounding box":
+                    ann_field = f"detections_{rater_id}"
+                    element_field = "detections"
+                elif ann_type == "mask":
+                    ann_field = f"segmentations_{rater_id}"
+                    element_field = "detections"
+                elif ann_type == "polygon":
+                    ann_field = f"segmentations_{rater_id}"
+                    element_field = "polylines"
+                else:
+                    continue
+                annotations = sample.get_field(ann_field)
+                if annotations is None:
+                    continue
+                for annotation in getattr(annotations, element_field, []):
+                    # populate annotation dict
+                    bbox, segm, area = None, None, None
+                    # conditional logic to figure out where goes what
+                    if ann_type == "bounding box":
+                        bbox = list(annotation["bounding_box"])
+                        area = calculate_bbox_area(bbox, width, height)
+                    elif ann_type == "mask":
+                        bbox = list(annotation["bounding_box"])
+                        mask = place_mask_in_image(annotation["mask"], bbox, height, width)
+                        segm = coco_mask.encode(np.asfortranarray(mask)) # this is a RLE
+                        area = coco_mask.area(segm)
+                    elif ann_type == "polygon":
+                        segm = [
+                            [
+                                point * width if i % 2 == 0 else point * height
+                                for sublist in shape
+                                for i, point in enumerate(sublist)
+                            ]
+                            for shape in annotation["points"]
+                        ]
+                        bbox = get_bbox_from_polygon(segm)
+                        area = bbox[2] * bbox[3]
+                    else:
+                        continue
+
+                    annotations_dict[str(annotator_idx)].append({
+                        "id": annotation_id,
+                        "image_id": image_idx,
+                        "category_id": dataset.default_classes.index(annotation["label"]),
+                        "bbox": bbox,
+                        "segmentation": segm,
+                        "area": area,
+                        "iscrowd": annotation["iscrowd"],
+                        "score": 0.99
+                    })
+                    annotation_id += 1
+
+        if ann_type == "bounding box":
+            annType = "bbox"
+        elif ann_type == "mask" or ann_type == "polygon":
+            annType = "segm"
+        else:
+            raise Exception("this should not happen")
+        # check the sampling
+        if dataset_scope_choice == "Full":
+            ann_dict_0 = {"annotations": annotations_dict["0"], "images": annotations_dict["images"], "categories": categories}
+            ann_dict_1 = {"annotations": annotations_dict["1"], "images": annotations_dict["images"], "categories": categories}
+            mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds, ctx)
+            for thrs in iou_thresholds:
+                mmaps[f"{ann_type}_{thrs}"] = mmap_dict[str(thrs)]
+        elif dataset_scope_choice == "Partial":
+            random.seed(random_seed_s)
+            for idx in range(sampling_k):
+                sampled_images = random.sample(annotations_dict["images"], subset_n)
+                image_ids = [image["id"] for image in sampled_images]
+                ann_0 = [annotation for annotation in annotations_dict["0"] if annotation["image_id"] in image_ids]
+                ann_1 = [annotation for annotation in annotations_dict["1"] if annotation["image_id"] in image_ids]
+                ann_dict_0 = {"annotations": ann_0, "images": sampled_images, "categories": categories}
+                ann_dict_1 = {"annotations": ann_1, "images": sampled_images, "categories": categories}
+                mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds, ctx)
+                for thrs in iou_thresholds:
+                    mmaps[f"{ann_type}_{thrs}_{random_seed_s}_{subset_n}_{idx}"] = mmap_dict[str(thrs)]
+        else:
+            raise Exception("This should not be possible.")
+
+        dataset.info["mmAPs"] = mmaps
+        dataset.save()
+
+        return {}
+
+    def resolve_output(self, ctx):
+        outputs = types.Object()
+
+        ### Add your outputs here ###
+
+        return types.Property(outputs)
+
+def calc_mmap(dict_a, dict_b, ann_type, iou_thresholds, ctx):
+    cocoGt_a = COCO()
+    cocoGt_b = COCO()
+    cocoGt_a.dataset = deepcopy(dict_a)
+    cocoGt_b.dataset = deepcopy(dict_b)
+    cocoGt_a.createIndex()
+    cocoGt_b.createIndex()
+
+    cocoDt_b = cocoGt_a.loadRes(deepcopy(dict_b["annotations"]))
+    cocoDt_a = cocoGt_b.loadRes(deepcopy(dict_a["annotations"]))
+
+    cocoEval_a = COCOeval(cocoGt_a, cocoDt_b, ann_type)
+    cocoEval_b = COCOeval(cocoGt_b, cocoDt_a, ann_type)
+
+    cocoEval_a.params.iouThrs = iou_thresholds
+    cocoEval_b.params.iouThrs = iou_thresholds
+    cocoEval_a.params.maxDets = [100, 300, 1000]
+    cocoEval_b.params.maxDets = [100, 300, 1000]
+
+    cocoEval_a.evaluate()
+    cocoEval_b.evaluate()
+    cocoEval_a.accumulate()
+    cocoEval_b.accumulate()
+
+    mmap_dict = {}
+
+    for thrs in iou_thresholds:
+        mmap_dict[str(thrs)] = (compute_ap_at_iou(cocoEval_a, thrs) + compute_ap_at_iou(cocoEval_b, thrs)) / 2.0
+
+    return mmap_dict
+def compute_ap_at_iou(cocoEval, iouThr, areaRng='all', maxDets=1000):
+    """
+    Compute Average Precision (AP) at a specific IoU threshold for a given COCO evaluation object.
+
+    Parameters:
+        cocoEval: COCO evaluation object after `accumulate()` has been called.
+        iouThr: Specific IoU threshold to compute AP for (e.g., 0.5 or 0.75).
+        areaRng: Area range ('all', 'small', 'medium', 'large'). Default is 'all'.
+        maxDets: Maximum number of detections. Default is 100.
+
+    Returns:
+        Average Precision (AP) value at the specified IoU threshold.
+    """
+    if not cocoEval.eval:
+        raise Exception("The cocoEval object must have `accumulate()` run first.")
+
+    p = cocoEval.params
+
+    # Find the index of the specified IoU threshold
+    if iouThr not in p.iouThrs:
+        raise ValueError(f"iouThr={iouThr} not found in cocoEval.params.iouThrs")
+    t = np.where(np.isclose(p.iouThrs, iouThr))[0][0]  # Index for the IoU threshold
+
+    # Find the index of the specified area range
+    aind = [i for i, aRng in enumerate(p.areaRngLbl) if aRng == areaRng]
+    if not aind:
+        raise ValueError(f"areaRng={areaRng} not found in cocoEval.params.areaRngLbl")
+    aind = aind[0]
+
+    # Find the index of the specified max detections
+    mind = [i for i, mDet in enumerate(p.maxDets) if mDet == maxDets]
+    if not mind:
+        raise ValueError(f"maxDets={maxDets} not found in cocoEval.params.maxDets")
+    mind = mind[0]
+
+    # Get precision values
+    s = cocoEval.eval['precision']  # Shape: [TxRxKxAxM]
+    if s is None:
+        raise ValueError("Precision metrics not found in cocoEval.eval")
+
+    # Extract precision for the given IoU threshold, area range, and max detections
+    s = s[t, :, :, aind, mind]
+    if len(s[s > -1]) == 0:
+        return -1  # No valid results
+
+    return np.mean(s[s > -1])
+
+def calculate_bbox_area(bbox, image_width, image_height):
+    """Calculate area of bounding box from relative xywh format."""
+    _, _, w, h = bbox  # Assuming bbox = (x_center, y_center, width, height)
+    absolute_width = w * image_width
+    absolute_height = h * image_height
+    return absolute_width * absolute_height
+
+def get_bbox_from_polygon(polygon):
+    """
+    Calculate the bounding box (x, y, w, h) from a polygon.
+
+    Args:
+        polygon (list): A list of points, where each point is [x, y].
+
+    Returns:
+        list: The bounding box [x_min, y_min, width, height] in relative format.
+    """
+    # Flatten the polygon into a list of points
+    all_points = [point for shape in polygon for point in shape]
+
+    # Extract x and y coordinates
+    x_coords = all_points[::2]  # Every other element starting at 0
+    y_coords = all_points[1::2]  # Every other element starting at 1
+
+    # Get the bounding box coordinates
+    x_min = min(x_coords)
+    y_min = min(y_coords)
+    x_max = max(x_coords)
+    y_max = max(y_coords)
+
+    # Calculate width and height
+    width = x_max - x_min
+    height = y_max - y_min
+
+    return [x_min, y_min, width, height]
+
+def place_mask_in_image(binary_mask, bbox, image_height, image_width):
+    """
+    Places a binary mask into the correct position within an image canvas based on the bounding box,
+    with safety checks for alignment and boundary conditions.
+
+    Args:
+        binary_mask (np.ndarray): Binary mask (height, width) of the object.
+        bbox (list or tuple): Bounding box in [x, y, width, height] format, relative to the image dimensions.
+        image_height (int): Height of the full image.
+        image_width (int): Width of the full image.
+
+    Returns:
+        np.ndarray: Full-sized binary mask with the object mask placed in the correct position.
+    """
+    # Convert relative bounding box to absolute pixel values
+    x1_f, y1_f = bbox[0] * image_width, bbox[1] * image_height
+    x2_f, y2_f = (bbox[0] + bbox[2]) * image_width, (bbox[1] + bbox[3]) * image_height
+
+    x1, x2 = int(np.floor(x1_f)), int(np.ceil(x2_f))
+    y1, y2 = int(np.floor(y1_f)), int(np.ceil(y2_f))
+
+    # Adjust if there's a mismatch in broadcasting dimensions
+    if x2 - x1 != binary_mask.shape[1]:
+        if abs(x1_f - x1) <= abs(x2 - x2_f):
+            x1 = max(0, x1 - 1 if abs(x1_f - x1) > 1 else x1)
+        else:
+            x2 = min(image_width, x2 + 1 if abs(x2 - x2_f) > 1 else x2)
+
+    if y2 - y1 != binary_mask.shape[0]:
+        if abs(y1_f - y1) <= abs(y2 - y2_f):
+            y1 = max(0, y1 - 1 if abs(y1_f - y1) > 1 else y1)
+        else:
+            y2 = min(image_height, y2 + 1 if abs(y2 - y2_f) > 1 else y2)
+
+    # Ensure bounding box is within image boundaries
+    x1, x2 = max(0, x1), min(image_width, x2)
+    y1, y2 = max(0, y1), min(image_height, y2)
+
+    # Resize the binary mask to fit the adjusted bounding box dimensions
+    adjusted_mask_height = y2 - y1
+    adjusted_mask_width = x2 - x1
+    resized_mask = np.zeros((adjusted_mask_height, adjusted_mask_width), dtype=np.uint8)
+
+    # Ensure the resized mask fits correctly within the adjusted region
+    resized_mask[:binary_mask.shape[0], :binary_mask.shape[1]] = binary_mask[:adjusted_mask_height, :adjusted_mask_width]
+
+    # Initialize a blank canvas for the full image
+    full_image_mask = np.zeros((image_height, image_width), dtype=np.uint8)
+
+    # Place the adjusted mask in the correct location
+    full_image_mask[y1:y1 + adjusted_mask_height, x1:x1 + adjusted_mask_width] = resized_mask
+
+    return full_image_mask
+def _execution_mode(ctx, inputs):
+    delegate = ctx.params.get("delegate", False)
+
+    if delegate:
+        description = "Uncheck this box to execute the operation immediately"
+    else:
+        description = "Check this box to delegate execution of this task"
+
+    inputs.bool(
+        "delegate",
+        default=False,
+        label="Delegate execution?",
+        description=description,
+        view=types.CheckboxView(),
+    )
+
+    if delegate:
+        inputs.view(
+            "notice",
+            types.Notice(
+                label=(
+                    "You've chosen delegated execution. Note that you must "
+                    "have a delegated operation service running in order for "
+                    "this task to be processed. See "
+                    "https://docs.voxel51.com/plugins/index.html#operators "
+                    "for more information"
+                )
+            ),
+        )
+
 def register(plugin):
     plugin.register(LoadMultiAnnotatedData)
     plugin.register(CalculateIaa)
     plugin.register(IAAPanel)
+    plugin.register(CalculatemmAP)
