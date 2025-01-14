@@ -170,13 +170,13 @@ class LoadMultiAnnotatedData(foo.Operator):
 
     def __call__(self, sample_collection, annos_path, overwrite=False, num_workers=False, delegate=False):
         ctx = dict(view=sample_collection.view())
-        params = dict(annos_path=annos_path, overwrite=overwrite, num_workers=num_workers, delegate=delegate)
+        params = dict(annos_path=annos_path, overwrite=overwrite, num_workers=num_workers, delegate=delegate, api_call=True)
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
         # --- for SDK call ---
-        annos_path = ctx.params.get("annos_path", None)
-        if annos_path is not None:
+        api_call = ctx.params.get("api_call", False)
+        if api_call:
             # Parameters are already provided; no need to resolve input
             return None
         # --- for SDK call ---
@@ -444,70 +444,30 @@ class CalculateIaa(foo.Operator):
             allow_delegated_execution=True,
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
+            dynamic=True,
         )
 
-    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False):
+    def __call__(self, sample_collection, annotation_type, iou_thresholds, run_sampling=False, subset_n=None,
+                 sampling_k=None, random_seed_s=None, delegate=False):
         ctx = dict(view=sample_collection.view())
-        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate)
+        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, run_sampling=run_sampling,
+                      subset_n=subset_n, sampling_k=sampling_k, random_seed_s=random_seed_s, delegate=delegate, api_call=True)
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
         # --- for SDK call ---
-        iou_thresholds = ctx.params.get("iou_thresholds", None)
-        if iou_thresholds is not None:
+        api_call = ctx.params.get("api_call", False)
+        if api_call:
             # Parameters are already provided; no need to resolve input
             return None
         # --- for SDK call ---
 
         inputs = types.Object()
 
-        dataset = ctx.dataset  # Access the dataset from context
+        inputs.md("###### Options for calculating inter annotator agreement", name="mk1")
 
         # Check available annotation types (bbox, polygon, mask)
-        available_types = ctx.params.get("available_types", [])
-        if available_types == []:
-            sample = dataset.first()
-            # Check if rater list exists
-            if not sample.has_field("rater_list"):
-                inputs = types.Object()
-                prop = inputs.view("message", types.Error(
-                    label="No multi-annotated data found."),
-                    description="Please run `Load Multi Annotated Data` first or check if your annotations file is properly"
-                                " formatted.",
-                                   )
-                prop.invalid = True
-                return types.Property(inputs)
-
-            raters_by_image = sample.get_field("rater_list")
-
-            # Check for bounding boxes
-            for rater_id in raters_by_image:
-                detections = sample.get_field(f"detections_{rater_id}")
-                if detections is not None:
-                    available_types.append("bounding box")
-                    break
-
-            # Check for segmentations (masks and polygons)
-            found_segmentation = False
-            for rater_id in raters_by_image:
-                segmentations = sample.get_field(f"segmentations_{rater_id}")
-                if segmentations is not None:
-                    if hasattr(segmentations, "detections"):
-                        for detection in segmentations.detections:
-                            if "bounding_box" in detection:
-                                available_types.append("mask")
-                                found_segmentation = True
-                                break
-                        if found_segmentation:
-                            break
-                    if hasattr(segmentations, "polylines"):
-                        for polyline in segmentations.polylines:
-                            available_types.append("polygon")
-                            found_segmentation = True
-                            break
-                        if found_segmentation:
-                            break
-            ctx.params["available_types"] = available_types
+        available_types = check_available_annotation_types(ctx)
 
         # Create checkboxes for available annotation types
         annotation_types_radio_group = types.RadioGroup()
@@ -529,6 +489,56 @@ class CalculateIaa(foo.Operator):
             label="IoU Thresholds",
             description="Enter IoU thresholds. Values should range between 0.01 and 0.99.",
         )
+
+        inputs.bool(
+            "run_sampling",
+            default=False,
+            label="Run sampling",
+            description="Run sampling procedure to produce confidence interval when determining convergence threshold."
+        )
+
+        run_sampling = ctx.params.get("run_sampling")
+
+        if run_sampling:
+
+            dataset = ctx.dataset
+
+            inputs.md("""
+                         Selecting "Run sampling" will still first run IAA on all samples but than, the sampling procedure 
+                         applies **bootstrapping**, where `k` replicates of size `n` are drawn from the dataset `N` with 
+                         replacement, using a fixed random seed (`s`) for reproducibility.   
+                         Please consider deligating this operation, since for larger k or n the processing might take 
+                         multiple hours.
+                      """, name="mk2")
+
+            inputs.int(
+                "subset_n",
+                label="Subset Size (n)",
+                description="Size of the dataset sample replicate n, with maximum size: dataset size - 1",
+                default=int(len(dataset)*0.1),
+                min=1,
+                max=len(dataset)-1,
+                required=True
+            )
+
+            inputs.int(
+                "sampling_k",
+                label="Number of Samples (k)",
+                description="The number of times the sampling procedure is repeated.",
+                default=1000,
+                min=2,
+                required=True
+            )
+
+            inputs.int(
+                "random_seed_s",
+                label="Random Seed (s)",
+                description="Select a random seed used to sample from the dataset. Available for reproduction purposes.",
+                default=42,
+                min=0,
+                required=True
+            )
+
 
         # Add execution mode (if applicable to your use case)
         _execution_mode(ctx, inputs)
@@ -626,14 +636,36 @@ class CalculateIaa(foo.Operator):
                 sample.save()
                 alphas[str(iou_threshold)].append(alpha)
 
+        run_sampling = ctx.params.get("run_sampling")
+        if run_sampling:
+            subset_n = ctx.params.get("subset_n")
+            sampling_k = ctx.params.get("sampling_k")
+            random_seed_s = ctx.params.get("random_seed_s")
+            if "iaa_sampled" not in dataset.info:
+                dataset.info["iaa_sampled"] = {}
+                dataset.save()
+            iaas = dataset.info["iaa_sampled"]
+            random.seed(random_seed_s)
+            for idx in range(sampling_k):
+                # sample iaa value per threshold
+                indices = random.sample(range(len(dataset)), subset_n)
+                for iou_threshold in iou_thresholds:
+                    iaa_values = [alphas[str(iou_threshold)][i] for i in indices]
+                    iaas[f"{ann_type}_{iou_threshold}_{random_seed_s}_{subset_n}_{idx}"] = sum(iaa_values) / len(iaa_values)
+
+            dataset.info["iaa_sampled"] = iaas
+            dataset.save()
+
         message = "Mean K-Alpha for:"
         for iou_threshold in iou_thresholds:
             u_k_alpha = sum(alphas[str(iou_threshold)]) / len(alphas[str(iou_threshold)])
-            message += f"\n\tIoU {iou_threshold}: {u_k_alpha}"
+            message += f"\n\tIoU {iou_threshold} on {ann_type}: {u_k_alpha}"
+
+        # Include a message for sampling
+        if run_sampling:
+            message += f"\nSampling completed with {sampling_k} samples of size {subset_n}"
 
         print(message)
-
-        ctx.ops.reload_dataset()
 
         ctx.ops.open_panel("iaa_panel")
 
@@ -647,7 +679,6 @@ class CalculateIaa(foo.Operator):
             "message",
             types.Notice(label=ctx.results.get("message", "")),
         )
-        print(ctx.results.get("message", ""))
 
         return types.Property(outputs)
 
@@ -801,56 +832,29 @@ class CalculatemmAP(foo.Operator):
             dark_icon="/assets/icon-dark.svg",
         )
 
+    def __call__(self, sample_collection, annotation_type, iou_thresholds, dataset_scope, subset_n=None, sampling_k=None,
+                 random_seed_s=None, delegate=False):
+        ctx = dict(view=sample_collection.view())
+        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, dataset_scope=dataset_scope,
+                      subset_n=subset_n, sampling_k=sampling_k, random_seed_s=random_seed_s, delegate=delegate, api_call=True)
+        return foo.execute_operator(self.uri, ctx, params=params)
+
     def resolve_input(self, ctx):
+        # --- for SDK call ---
+        api_call = ctx.params.get("api_call", False)
+        if api_call:
+            # Parameters are already provided; no need to resolve input
+            return None
+        # --- for SDK call ---
+
         inputs = types.Object()
+
+        inputs.md("###### Options for calculating modified mean Average Precision", name="mk1")
 
         dataset = ctx.dataset
 
         # Check available annotation types (bbox, polygon, mask)
-        available_types = ctx.params.get("available_types", [])
-        if available_types == []:
-            sample = dataset.first()
-            # Check if rater list exists
-            if not sample.has_field("rater_list"):
-                inputs = types.Object()
-                prop = inputs.view("message", types.Error(
-                    label="No multi-annotated data found."),
-                    description="Please run `Load Multi Annotated Data` first or check if your annotations file is properly"
-                                " formatted.",
-                                   )
-                prop.invalid = True
-                return types.Property(inputs)
-
-            raters_by_image = sample.get_field("rater_list")
-
-            # Check for bounding boxes
-            for rater_id in raters_by_image:
-                detections = sample.get_field(f"detections_{rater_id}")
-                if detections is not None:
-                    available_types.append("bounding box")
-                    break
-
-            # Check for segmentations (masks and polygons)
-            found_segmentation = False
-            for rater_id in raters_by_image:
-                segmentations = sample.get_field(f"segmentations_{rater_id}")
-                if segmentations is not None:
-                    if hasattr(segmentations, "detections"):
-                        for detection in segmentations.detections:
-                            if "bounding_box" in detection:
-                                available_types.append("mask")
-                                found_segmentation = True
-                                break
-                        if found_segmentation:
-                            break
-                    if hasattr(segmentations, "polylines"):
-                        for polyline in segmentations.polylines:
-                            available_types.append("polygon")
-                            found_segmentation = True
-                            break
-                        if found_segmentation:
-                            break
-            ctx.params["available_types"] = available_types
+        available_types = check_available_annotation_types(ctx)
 
         # Create checkboxes for available annotation types
         annotation_types_radio_group = types.RadioGroup()
@@ -899,7 +903,7 @@ class CalculatemmAP(foo.Operator):
                          random seed (`s`) for reproducibility.   
                          Please consider deligating this operation, since for larger k or n the processing might take 
                          multiple hours.
-                      """)
+                      """, name="mk2")
 
             inputs.int(
                 "subset_n",
@@ -1223,6 +1227,55 @@ def place_mask_in_image(binary_mask, bbox, image_height, image_width):
     full_image_mask[y1:y1 + adjusted_mask_height, x1:x1 + adjusted_mask_width] = resized_mask
 
     return full_image_mask
+
+def check_available_annotation_types(ctx):
+    available_types = ctx.params.get("available_types", [])
+    dataset = ctx.dataset
+    if available_types == []:
+        sample = dataset.first()
+        # Check if rater list exists
+        if not sample.has_field("rater_list"):
+            inputs = types.Object()
+            prop = inputs.view("message", types.Error(
+                label="No multi-annotated data found."),
+                               description="Please run `Load Multi Annotated Data` first or check if your annotations file is properly"
+                                           " formatted.",
+                               )
+            prop.invalid = True
+            return types.Property(inputs)
+
+        raters_by_image = sample.get_field("rater_list")
+
+        # Check for bounding boxes
+        for rater_id in raters_by_image:
+            detections = sample.get_field(f"detections_{rater_id}")
+            if detections is not None:
+                available_types.append("bounding box")
+                break
+
+        # Check for segmentations (masks and polygons)
+        found_segmentation = False
+        for rater_id in raters_by_image:
+            segmentations = sample.get_field(f"segmentations_{rater_id}")
+            if segmentations is not None:
+                if hasattr(segmentations, "detections"):
+                    for detection in segmentations.detections:
+                        if "bounding_box" in detection:
+                            available_types.append("mask")
+                            found_segmentation = True
+                            break
+                    if found_segmentation:
+                        break
+                if hasattr(segmentations, "polylines"):
+                    for polyline in segmentations.polylines:
+                        available_types.append("polygon")
+                        found_segmentation = True
+                        break
+                    if found_segmentation:
+                        break
+        ctx.params["available_types"] = available_types
+    return available_types
+
 def _execution_mode(ctx, inputs):
     delegate = ctx.params.get("delegate", False)
 
