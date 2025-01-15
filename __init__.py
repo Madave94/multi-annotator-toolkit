@@ -1046,7 +1046,7 @@ class CalculatemmAP(foo.Operator):
             ann_dict_1 = {"annotations": annotations_dict["1"], "images": annotations_dict["images"], "categories": categories}
             mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds)
             for thrs in iou_thresholds:
-                mmaps[f"{ann_type}_{thrs}"] = mmap_dict[str(thrs)]
+                mmaps[f"{ann_type}_{thrs}_None_all_0"] = mmap_dict[str(thrs)]
         elif dataset_scope_choice == "Partial":
             random.seed(random_seed_s)
             for idx in tqdm(range(sampling_k), desc="Running sampling"):
@@ -1340,14 +1340,14 @@ class ConvergenceThresholdPanel(foo.Panel):
         table.add_column("num_samples", label="Number of Samples (k)")
         table.add_column("subset_size", label="Subset Size (n)")
         table.add_column("random_seed", label="Random Seed (s)")
+        table.add_column("visualized", label="Visualized")
 
-        # Add row actions for the visualize column
+        # Add an action column to toggle inclusion
         table.add_row_action(
-            "visualize_button",
-            self.handle_visualize_action,
-            label="Visualize",
-            #icon="visibility",
-            #tooltip="Toggle visualization for this experiment",
+            "toggle_inclusion",
+            self.handle_toggle_action,
+            label="Set/Unset Visualization",  # Default label for excluded
+            tooltip="Click to include or exclude this row",
         )
 
         panel.obj(
@@ -1365,6 +1365,8 @@ class ConvergenceThresholdPanel(foo.Panel):
         # Set up data to populate the table
         dataset = ctx.dataset
         table_data = []
+        visualization_states = ctx.panel.get_state("visualization_states", {})
+
         if "mmAPs" in dataset.info:
             mmaps = defaultdict(list)
             for key, value in dataset.info["mmAPs"].items():
@@ -1372,24 +1374,73 @@ class ConvergenceThresholdPanel(foo.Panel):
                 mmaps[key].append(value)
             for key, values in mmaps.items():
                 ann_type, iou_threshold, random_seed, subset_n = key.split("_")
+                row_key = f"mmAP_{key}"
+                if row_key in visualization_states:
+                    vis_state = visualization_states[row_key]
+                else:
+                    vis_state = "x"
+                    visualization_states[row_key] = vis_state
                 table_data.append({
+                    "key": row_key,
                     "evaluation_type": "mmAP",
                     "annotation_type": ann_type,
                     "iou_threshold": iou_threshold,
                     "num_samples": str(len(values)),
                     "subset_size": subset_n,
                     "random_seed": random_seed,
-                    "values": values
+                    "values": values,
+                    "visualized": vis_state,
+                })
+        if "iaa_sampled" in dataset.info:
+            iaas = defaultdict(list)
+            for key, value in dataset.info["iaa_sampled"].items():
+                key, _ = key.rsplit("_", 1)
+                iaas[key].append(value)
+            for key, values in iaas.items():
+                ann_type, iou_threshold, random_seed, subset_n = key.split("_")
+                row_key = f"IAA_{key}"
+                if row_key in visualization_states:
+                    vis_state = visualization_states[row_key]
+                else:
+                    vis_state = "x"
+                    visualization_states[row_key] = vis_state
+                table_data.append({
+                    "key": row_key,
+                    "evaluation_type": "IAA",
+                    "annotation_type": ann_type,
+                    "iou_threshold": iou_threshold,
+                    "num_samples": str(len(values)),
+                    "subset_size": subset_n,
+                    "random_seed": random_seed,
+                    "values": values,
+                    "visualized": vis_state,
                 })
 
+        ctx.panel.state.visualization_states = visualization_states
         ctx.panel.state.table = table_data
 
-    def handle_visualize_action(self, ctx, row):
+    def handle_toggle_action(self, ctx):
         """
-        Handle the click event for the visualize action button.
+        Handle the toggle action to include/exclude a row.
         """
-        # ToDo
-        pass
+        # Get the row index and current state
+        row_index = ctx.params["row"]
+        table = ctx.panel.state.table
+        row_key = table[row_index]["key"]
+
+        if table[row_index]["visualized"] == "x":
+            new_state = "✓"
+        else:
+            new_state = "x"
+
+        table[row_index]["visualized"] = new_state
+        visualization_states = ctx.panel.state.visualization_states
+        visualization_states[row_key] = new_state
+        ctx.panel.state.visualization_states = visualization_states
+
+        # Toggle the state
+        ctx.panel.state.table = table
+
 
 def _execution_mode(ctx, inputs):
     delegate = ctx.params.get("delegate", False)
