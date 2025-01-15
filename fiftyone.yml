@@ -1,14 +1,16 @@
 name: "@madave94/multi_annotator_toolkit"
 type: plugin
 author: David Tschirschwitz
-version: 0.1.0
+version: 0.1.2
 url: https://github.com/Madave94/multi-annotator-toolkit
 license: Apache 2.0
 description: Multi Annotator Toolkit
 fiftyone:
-  version: ">=1.0.2"
+  version: ">=1.2.0"
 operators:
   - load_multi_annotated_data
   - calculate_iaa
-  - iaa_panel
   - calculate_mmap
+panels:
+  - iaa_panel
+  - convergence_threshold_panel

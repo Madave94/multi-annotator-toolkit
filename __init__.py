@@ -164,6 +164,7 @@ class LoadMultiAnnotatedData(foo.Operator):
             name="load_multi_annotated_data",
             label="Load Multi Annotated Data",
             description="This loads the multi-annotated meta-data like the rater-list into the samples and splits up the annotations by rater_id.",
+            icon="/assets/icon.svg",
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
         )
@@ -442,6 +443,7 @@ class CalculateIaa(foo.Operator):
             description="Calculates the Inter-Annotator-Agreement",
             allow_immediate_execution=True,
             allow_delegated_execution=True,
+            icon="/assets/icon.svg",
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
             dynamic=True,
@@ -648,7 +650,6 @@ class CalculateIaa(foo.Operator):
             random_seed_s = ctx.params.get("random_seed_s", 42)
             if "iaa_sampled" not in dataset.info:
                 dataset.info["iaa_sampled"] = {}
-                dataset.save()
             iaas = dataset.info["iaa_sampled"]
             random.seed(random_seed_s)
             for idx in range(sampling_k):
@@ -697,6 +698,7 @@ class IAAPanel(foo.Panel):
             allow_multiple=False,
             surfaces="grid",
             help_markdown="A panel to filter IAA values in the views and show summary statistics.",
+            icon="/assets/icon.svg",
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
         )
@@ -833,6 +835,7 @@ class CalculatemmAP(foo.Operator):
             allow_immediate_execution=True,
             allow_delegated_execution=True,
             dynamic=True,
+            icon="/assets/icon.svg",
             light_icon="/assets/icon-light.svg",
             dark_icon="/assets/icon-dark.svg",
         )
@@ -1310,6 +1313,84 @@ def check_available_annotation_types(ctx):
         ctx.params["available_types"] = available_types
     return available_types
 
+class ConvergenceThresholdPanel(foo.Panel):
+    @property
+    def config(self):
+        return foo.PanelConfig(
+            name="convergence_threshold_panel",
+            label="Convergence Threshold Panel",
+            allow_multiple=False,
+            #surfaces="modal",
+            help_markdown="A panel to select and visualize the convergence threshold.",
+            icon="/assets/icon.svg",
+            light_icon="/assets/icon-light.svg",
+            dark_icon="/assets/icon-dark.svg",
+        )
+
+    def render(self, ctx):
+        panel = types.Object()
+
+        # Define a TableView
+        table = types.TableView()
+
+        # Add columns for the table
+        table.add_column("evaluation_type", label="Evaluation Type")
+        table.add_column("annotation_type", label="Annotation Type")
+        table.add_column("iou_threshold", label="IoU Threshold")
+        table.add_column("num_samples", label="Number of Samples (k)")
+        table.add_column("subset_size", label="Subset Size (n)")
+        table.add_column("random_seed", label="Random Seed (s)")
+
+        # Add row actions for the visualize column
+        table.add_row_action(
+            "visualize_button",
+            self.handle_visualize_action,
+            label="Visualize",
+            #icon="visibility",
+            #tooltip="Toggle visualization for this experiment",
+        )
+
+        panel.obj(
+            name="table",
+            view=table,
+            label="Convergence Threshold Table"
+        )
+
+        return types.Property(
+            panel,
+            view=types.GridView(align_x="center", align_y="center", width=100, height=100),
+        )
+
+    def on_load(self, ctx):
+        # Set up data to populate the table
+        dataset = ctx.dataset
+        table_data = []
+        if "mmAPs" in dataset.info:
+            mmaps = defaultdict(list)
+            for key, value in dataset.info["mmAPs"].items():
+                key, _ = key.rsplit("_", 1)
+                mmaps[key].append(value)
+            for key, values in mmaps.items():
+                ann_type, iou_threshold, random_seed, subset_n = key.split("_")
+                table_data.append({
+                    "evaluation_type": "mmAP",
+                    "annotation_type": ann_type,
+                    "iou_threshold": iou_threshold,
+                    "num_samples": str(len(values)),
+                    "subset_size": subset_n,
+                    "random_seed": random_seed,
+                    "values": values
+                })
+
+        ctx.panel.state.table = table_data
+
+    def handle_visualize_action(self, ctx, row):
+        """
+        Handle the click event for the visualize action button.
+        """
+        # ToDo
+        pass
+
 def _execution_mode(ctx, inputs):
     delegate = ctx.params.get("delegate", False)
 
@@ -1354,3 +1435,4 @@ def register(plugin):
     plugin.register(CalculateIaa)
     plugin.register(IAAPanel)
     plugin.register(CalculatemmAP)
+    plugin.register(ConvergenceThresholdPanel)
