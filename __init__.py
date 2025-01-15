@@ -8,12 +8,12 @@ import os
 import json
 from tqdm import tqdm
 import random
-import traceback
 from pycocotools import mask as coco_mask
 import numpy as np
 from copy import deepcopy
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from kalphacv import reliability_data, krippendorff_alpha
 
 class LoadMultiAnnotatedData(foo.Operator):
@@ -450,6 +450,11 @@ class CalculateIaa(foo.Operator):
     def __call__(self, sample_collection, annotation_type, iou_thresholds, run_sampling=False, subset_n=None,
                  sampling_k=None, random_seed_s=None, delegate=False):
         ctx = dict(view=sample_collection.view())
+        # set default parameters for sampling procedure if sampling is activated
+        if run_sampling:
+            subset_n = subset_n if subset_n else int(len(sample_collection) * 0.1)
+            sampling_k = sampling_k if sampling_k else 1000
+            random_seed_s = random_seed_s if random_seed_s else 42
         params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, run_sampling=run_sampling,
                       subset_n=subset_n, sampling_k=sampling_k, random_seed_s=random_seed_s, delegate=delegate, api_call=True)
         return foo.execute_operator(self.uri, ctx, params=params)
@@ -638,9 +643,9 @@ class CalculateIaa(foo.Operator):
 
         run_sampling = ctx.params.get("run_sampling")
         if run_sampling:
-            subset_n = ctx.params.get("subset_n")
-            sampling_k = ctx.params.get("sampling_k")
-            random_seed_s = ctx.params.get("random_seed_s")
+            subset_n = ctx.params.get("subset_n", int(len(dataset)*0.1))
+            sampling_k = ctx.params.get("sampling_k", 1000)
+            random_seed_s = ctx.params.get("random_seed_s", 42)
             if "iaa_sampled" not in dataset.info:
                 dataset.info["iaa_sampled"] = {}
                 dataset.save()
@@ -663,7 +668,7 @@ class CalculateIaa(foo.Operator):
 
         # Include a message for sampling
         if run_sampling:
-            message += f"\nSampling completed with {sampling_k} samples of size {subset_n}"
+            message += f"\nSampling completed with {sampling_k} samples of size {subset_n} using random seed {random_seed_s}."
 
         print(message)
 
@@ -835,6 +840,11 @@ class CalculatemmAP(foo.Operator):
     def __call__(self, sample_collection, annotation_type, iou_thresholds, dataset_scope, subset_n=None, sampling_k=None,
                  random_seed_s=None, delegate=False):
         ctx = dict(view=sample_collection.view())
+        # set default parameters for sampling procedure if sampling is activated
+        if dataset_scope == "Partial":
+            subset_n = subset_n if subset_n else int(len(sample_collection) * 0.1)
+            sampling_k = sampling_k if sampling_k else 1000
+            random_seed_s = random_seed_s if random_seed_s else 42
         params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, dataset_scope=dataset_scope,
                       subset_n=subset_n, sampling_k=sampling_k, random_seed_s=random_seed_s, delegate=delegate, api_call=True)
         return foo.execute_operator(self.uri, ctx, params=params)
@@ -958,7 +968,7 @@ class CalculatemmAP(foo.Operator):
         annotations_dict = {"images": [], "0": [], "1": []}
 
         annotation_id = 0
-        for image_idx, sample in enumerate(dataset):
+        for image_idx, sample in enumerate(tqdm(dataset, desc="Pre-Processing samples")):
             raters_by_image = sample.get_field("rater_list")
             height, width = sample.metadata.height, sample.metadata.width
             filename = sample.filename
@@ -1031,19 +1041,19 @@ class CalculatemmAP(foo.Operator):
         if dataset_scope_choice == "Full":
             ann_dict_0 = {"annotations": annotations_dict["0"], "images": annotations_dict["images"], "categories": categories}
             ann_dict_1 = {"annotations": annotations_dict["1"], "images": annotations_dict["images"], "categories": categories}
-            mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds, ctx)
+            mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds)
             for thrs in iou_thresholds:
                 mmaps[f"{ann_type}_{thrs}"] = mmap_dict[str(thrs)]
         elif dataset_scope_choice == "Partial":
             random.seed(random_seed_s)
-            for idx in range(sampling_k):
+            for idx in tqdm(range(sampling_k), desc="Running sampling"):
                 sampled_images = random.sample(annotations_dict["images"], subset_n)
                 image_ids = [image["id"] for image in sampled_images]
                 ann_0 = [annotation for annotation in annotations_dict["0"] if annotation["image_id"] in image_ids]
                 ann_1 = [annotation for annotation in annotations_dict["1"] if annotation["image_id"] in image_ids]
                 ann_dict_0 = {"annotations": ann_0, "images": sampled_images, "categories": categories}
                 ann_dict_1 = {"annotations": ann_1, "images": sampled_images, "categories": categories}
-                mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds, ctx)
+                mmap_dict = calc_mmap(ann_dict_0, ann_dict_1, annType, iou_thresholds)
                 for thrs in iou_thresholds:
                     mmaps[f"{ann_type}_{thrs}_{random_seed_s}_{subset_n}_{idx}"] = mmap_dict[str(thrs)]
         else:
@@ -1052,38 +1062,62 @@ class CalculatemmAP(foo.Operator):
         dataset.info["mmAPs"] = mmaps
         dataset.save()
 
-        return {}
+        message = "Modified Mean Average Precision (mmAP) for:"
+        for iou_threshold in iou_thresholds:
+            if dataset_scope_choice == "Full":
+                mmap = mmaps[f"{ann_type}_{iou_threshold}"]
+            elif dataset_scope_choice == "Partial":
+                list_mmap = []
+                for idx in range(sampling_k):
+                    list_mmap.append(mmaps[f"{ann_type}_{iou_threshold}_{random_seed_s}_{subset_n}_{idx}"])
+                mmap = sum(list_mmap) / len(list_mmap)
+            else:
+                raise Exception("This should not be possible.")
+            message += f"\n\tIoU {iou_threshold} on {ann_type}: {mmap}"
+
+        # Include a message for sampling
+        if dataset_scope_choice == "Partial":
+            message += f"\nSampling completed with {sampling_k} samples of size {subset_n} using random seed {random_seed_s}."
+
+        print(message)
+
+        return {"message": message}
 
     def resolve_output(self, ctx):
         outputs = types.Object()
 
-        ### Add your outputs here ###
+        # Display the message as a notice
+        outputs.view(
+            "message",
+            types.Notice(label=ctx.results.get("message", "")),
+        )
 
         return types.Property(outputs)
 
-def calc_mmap(dict_a, dict_b, ann_type, iou_thresholds, ctx):
-    cocoGt_a = COCO()
-    cocoGt_b = COCO()
-    cocoGt_a.dataset = deepcopy(dict_a)
-    cocoGt_b.dataset = deepcopy(dict_b)
-    cocoGt_a.createIndex()
-    cocoGt_b.createIndex()
+def calc_mmap(dict_a, dict_b, ann_type, iou_thresholds):
+    with suppress_output():
+        cocoGt_a = COCO()
+        cocoGt_b = COCO()
+        cocoGt_a.dataset = deepcopy(dict_a)
+        cocoGt_b.dataset = deepcopy(dict_b)
+        cocoGt_a.createIndex()
+        cocoGt_b.createIndex()
 
-    cocoDt_b = cocoGt_a.loadRes(deepcopy(dict_b["annotations"]))
-    cocoDt_a = cocoGt_b.loadRes(deepcopy(dict_a["annotations"]))
+        cocoDt_b = cocoGt_a.loadRes(deepcopy(dict_b["annotations"]))
+        cocoDt_a = cocoGt_b.loadRes(deepcopy(dict_a["annotations"]))
 
-    cocoEval_a = COCOeval(cocoGt_a, cocoDt_b, ann_type)
-    cocoEval_b = COCOeval(cocoGt_b, cocoDt_a, ann_type)
+        cocoEval_a = COCOeval(cocoGt_a, cocoDt_b, ann_type)
+        cocoEval_b = COCOeval(cocoGt_b, cocoDt_a, ann_type)
 
-    cocoEval_a.params.iouThrs = iou_thresholds
-    cocoEval_b.params.iouThrs = iou_thresholds
-    cocoEval_a.params.maxDets = [100, 300, 1000]
-    cocoEval_b.params.maxDets = [100, 300, 1000]
+        cocoEval_a.params.iouThrs = iou_thresholds
+        cocoEval_b.params.iouThrs = iou_thresholds
+        cocoEval_a.params.maxDets = [100, 300, 1000]
+        cocoEval_b.params.maxDets = [100, 300, 1000]
 
-    cocoEval_a.evaluate()
-    cocoEval_b.evaluate()
-    cocoEval_a.accumulate()
-    cocoEval_b.accumulate()
+        cocoEval_a.evaluate()
+        cocoEval_b.evaluate()
+        cocoEval_a.accumulate()
+        cocoEval_b.accumulate()
 
     mmap_dict = {}
 
@@ -1305,6 +1339,15 @@ def _execution_mode(ctx, inputs):
                 )
             ),
         )
+
+@contextmanager
+def suppress_output():
+    """
+    Suppresses all output (stdout and stderr) in both Jupyter Notebook and standard Python.
+    """
+    with open(os.devnull, 'w') as devnull:
+        with redirect_stdout(devnull), redirect_stderr(devnull):
+            yield
 
 def register(plugin):
     plugin.register(LoadMultiAnnotatedData)
