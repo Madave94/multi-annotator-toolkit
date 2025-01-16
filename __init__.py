@@ -1369,6 +1369,7 @@ class ConvergenceThresholdPanel(foo.Panel):
             label="apply selection",
             on_click=self.apply_selection,
         )
+        ctx.panel.state.compute_mean = ctx.panel.get_state("compute_mean", False)
         v_stack.bool(
             "compute_mean",
             label="Compute Means",
@@ -1420,7 +1421,6 @@ class ConvergenceThresholdPanel(foo.Panel):
         table_data = []
         visualization_states = ctx.panel.get_state("visualization_states", {})
         ctx.panel.state.plot_title = ctx.panel.get_state("plot_title", "No plot applied yet")
-        ctx.panel.state.compute_mean = ctx.panel.get_state("compute_mean", False)
 
         if "mmAPs" in dataset.info:
             mmaps = defaultdict(list)
@@ -1536,7 +1536,8 @@ class ConvergenceThresholdPanel(foo.Panel):
         ctx.panel.state.visualization_states = visualization_states
 
     def on_change_compute_mean(self, ctx):
-        ctx.panel.state.compute_mean = not ctx.panel.state.compute_mean
+        current_state = ctx.params.get("value", None)
+
     def apply_selection(self, ctx):
         table = ctx.panel.state.table
         compute_mean = ctx.panel.state.compute_mean
