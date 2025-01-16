@@ -659,6 +659,7 @@ class CalculateIaa(foo.Operator):
                     iaa_values = [alphas[str(iou_threshold)][i] for i in indices]
                     iaas[f"{ann_type}_{iou_threshold}_{random_seed_s}_{subset_n}_{idx}"] = sum(iaa_values) / len(iaa_values)
 
+            del dataset.info["iaa_sampled"]
             dataset.info["iaa_sampled"] = iaas
             dataset.save()
 
@@ -1062,6 +1063,7 @@ class CalculatemmAP(foo.Operator):
         else:
             raise Exception("This should not be possible.")
 
+        del dataset.info["mmAPs"]
         dataset.info["mmAPs"] = mmaps
         dataset.save()
 
