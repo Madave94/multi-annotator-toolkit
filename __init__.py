@@ -1330,13 +1330,65 @@ class ConvergenceThresholdPanel(foo.Panel):
     def render(self, ctx):
         panel = types.Object()
 
-        # Define a TableView
+        v_stack = panel.v_stack(
+            "v_stack", width=95, align_x="center", align_y="center"
+        )
+        # include plot here
+
+        v_stack.plot(
+            "violin",
+            layout={
+              "title": ctx.panel.state.plot_title,
+              "automargin": True,
+              "margin": {"t": 75}
+            },
+            width=90,
+        )
+
+        # define buttons here
+
+        h_stack = v_stack.h_stack("h_stack", gap=2, align_x="center")
+
+        h_stack.btn(
+            "select_mmap",
+            label="Select all mmAP",
+            on_click=self.select_all_mmap,
+        )
+        h_stack.btn(
+            "select_iaa",
+            label="Select all IAA",
+            on_click=self.select_all_iaa,
+        )
+        h_stack.btn(
+            "reset",
+            label="reset selection",
+            on_click=self.reset_selection,
+        )
+        h_stack.btn(
+            "apply",
+            label="apply selection",
+            on_click=self.apply_selection,
+        )
+        v_stack.bool(
+            "compute_mean",
+            label="Compute Means",
+            on_change=self.on_change_compute_mean,
+            description="Setting this option will calculate the mean for samples with the same k, n and s across thresholds."
+                        "This will result in something like mmAP@[0.5,0.55,0.6, ...], similar to the standard COCO mAP metric.",
+        )
+
+
         table = types.TableView()
 
         # Add columns for the table
         table.add_column("evaluation_type", label="Evaluation Type")
         table.add_column("annotation_type", label="Annotation Type")
         table.add_column("iou_threshold", label="IoU Threshold")
+        table.add_column("mean", label="Mean")
+        table.add_column("min", label="Min")
+        table.add_column("max", label="Max")
+        table.add_column("ci_l", label="CI L")
+        table.add_column("ci_u", label="CI U")
         table.add_column("num_samples", label="Number of Samples (k)")
         table.add_column("subset_size", label="Subset Size (n)")
         table.add_column("random_seed", label="Random Seed (s)")
@@ -1350,14 +1402,15 @@ class ConvergenceThresholdPanel(foo.Panel):
             tooltip="Click to include or exclude this row",
         )
 
-        panel.obj(
+
+        v_stack.obj(
             name="table",
             view=table,
-            label="Convergence Threshold Table"
+            label="Convergence Threshold Table",
         )
 
         return types.Property(
-            panel,
+            v_stack,
             view=types.GridView(align_x="center", align_y="center", width=100, height=100),
         )
 
@@ -1366,6 +1419,8 @@ class ConvergenceThresholdPanel(foo.Panel):
         dataset = ctx.dataset
         table_data = []
         visualization_states = ctx.panel.get_state("visualization_states", {})
+        ctx.panel.state.plot_title = ctx.panel.get_state("plot_title", "No plot applied yet")
+        ctx.panel.state.compute_mean = ctx.panel.get_state("compute_mean", False)
 
         if "mmAPs" in dataset.info:
             mmaps = defaultdict(list)
@@ -1388,6 +1443,11 @@ class ConvergenceThresholdPanel(foo.Panel):
                     "num_samples": str(len(values)),
                     "subset_size": subset_n,
                     "random_seed": random_seed,
+                    "mean": round(sum(values) / len(values),3 ),
+                    "min": round(min(values), 3),
+                    "max": round(max(values),3 ),
+                    "ci_l": round(np.percentile(values, 2.5), 3),
+                    "ci_u": round(np.percentile(values, 97.5), 3),
                     "values": values,
                     "visualized": vis_state,
                 })
@@ -1412,6 +1472,11 @@ class ConvergenceThresholdPanel(foo.Panel):
                     "num_samples": str(len(values)),
                     "subset_size": subset_n,
                     "random_seed": random_seed,
+                    "mean": round(sum(values) / len(values),3 ),
+                    "min": round(min(values), 3),
+                    "max": round(max(values),3 ),
+                    "ci_l": round(np.percentile(values, 2.5), 3),
+                    "ci_u": round(np.percentile(values, 97.5), 3),
                     "values": values,
                     "visualized": vis_state,
                 })
@@ -1441,6 +1506,91 @@ class ConvergenceThresholdPanel(foo.Panel):
         # Toggle the state
         ctx.panel.state.table = table
 
+    def select_all_mmap(self, ctx):
+        table = ctx.panel.state.table
+        visualization_states = ctx.panel.state.visualization_states
+        for row in table:
+            if "mmAP" == row["evaluation_type"]:
+                row["visualized"] = "✓"
+                visualization_states[row["key"]] = "✓"
+        ctx.panel.state.table = table
+        ctx.panel.state.visualization_states = visualization_states
+
+    def select_all_iaa(self, ctx):
+        table = ctx.panel.state.table
+        visualization_states = ctx.panel.state.visualization_states
+        for row in table:
+            if "IAA" == row["evaluation_type"]:
+                row["visualized"] = "✓"
+                visualization_states[row["key"]] = "✓"
+        ctx.panel.state.table = table
+        ctx.panel.state.visualization_states = visualization_states
+
+    def reset_selection(self, ctx):
+        table = ctx.panel.state.table
+        visualization_states = ctx.panel.state.visualization_states
+        for row in table:
+            row["visualized"] = "x"
+            visualization_states[row["key"]] = "x"
+        ctx.panel.state.table = table
+        ctx.panel.state.visualization_states = visualization_states
+
+    def on_change_compute_mean(self, ctx):
+        ctx.panel.state.compute_mean = not ctx.panel.state.compute_mean
+    def apply_selection(self, ctx):
+        table = ctx.panel.state.table
+        compute_mean = ctx.panel.state.compute_mean
+
+        # Dictionary to group rows based on criteria
+        grouped_rows = defaultdict(list)
+        for row in table:
+            if "✓" == row["visualized"]:
+                # Create a key to group rows
+                grouping_key = (
+                    row["subset_size"],
+                    row["random_seed"],
+                    row["annotation_type"],
+                    row["num_samples"],
+                )
+                grouped_rows[grouping_key].append(row)
+
+        traces = []
+        title_names = []
+
+        # Process each group
+        for grouping_key, rows in grouped_rows.items():
+            # Ensure the group has more than one row to compute means across thresholds
+            if len(rows) > 1 and compute_mean:
+                # Accumulate values for each threshold
+                aggregated_values = np.array([row["values"] for row in rows])
+                mean_values = np.mean(aggregated_values, axis=0)
+                iou_thresholds = [float(row["iou_threshold"]) for row in rows]
+                sorted(iou_thresholds)
+
+                name = f"{rows[0]['evaluation_type']}@{iou_thresholds})"
+                title_names.append(name)
+                # Add a trace for the group
+                traces.append({
+                    "type": "violin",
+                    "y": mean_values,
+                    "name": name,
+                    "box": {"visible": True},
+                })
+            else:
+                for row in rows:
+                    # If only one row in the group, just add it directly
+                    name = row["evaluation_type"] + "@" + str(row["iou_threshold"])
+                    title_names.append(name)
+                    traces.append({
+                        "type": "violin",
+                        "y": row["values"],
+                        "name": name,
+                        "box": {"visible": True},
+                    })
+
+        # Update panel state with the new traces
+        ctx.panel.state.plot_title = "Convergence Threshold for at: " + str(title_names)
+        ctx.panel.data.violin = traces
 
 def _execution_mode(ctx, inputs):
     delegate = ctx.params.get("delegate", False)
