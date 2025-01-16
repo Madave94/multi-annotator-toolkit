@@ -1570,7 +1570,12 @@ class ConvergenceThresholdPanel(foo.Panel):
                 iou_thresholds = [float(row["iou_threshold"]) for row in rows]
                 sorted(iou_thresholds)
 
-                name = f"{rows[0]['evaluation_type']}@{iou_thresholds})"
+                if rows[0]["annotation_type"] == "bounding box":
+                    postfix = "bb"
+                else:
+                    postfix = "segm"
+
+                name = f"{rows[0]['evaluation_type']}-{postfix}@{iou_thresholds})"
                 title_names.append(name)
                 # Add a trace for the group
                 traces.append({
@@ -1581,8 +1586,12 @@ class ConvergenceThresholdPanel(foo.Panel):
                 })
             else:
                 for row in rows:
+                    if row["annotation_type"] == "bounding box":
+                        postfix = "bb"
+                    else:
+                        postfix = "segm"
                     # If only one row in the group, just add it directly
-                    name = row["evaluation_type"] + "@" + str(row["iou_threshold"])
+                    name = row["evaluation_type"] + "-" + postfix + "@" + str(row["iou_threshold"])
                     title_names.append(name)
                     traces.append({
                         "type": "violin",
