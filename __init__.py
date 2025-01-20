@@ -2139,21 +2139,29 @@ def merge_instances(detections, merged_id_list: list, image_shape, ann_type):
             if ann_type == "bounding box":
                 # merge bounding boxes
                 attributes.update(bounding_box=merge_relative_boxes(det_a, det_b))
+                merged_detections.append(
+                    fol.Detection(
+                        **attributes,
+                    )
+                )
             elif ann_type == "mask":
                 # merge masks
-                attributes.update(bounding_box=None, mask=None)
+                poly_1 = det_a.to_polyline()
+                points = merge_polygons(poly_1, det_b.to_polyline())
+                attributes.update(points=points, filled=poly_1.filled, closed=poly_1.closed)
+                new_polygon = fol.Polyline(**attributes)
+                merged_detections.append( new_polygon.to_detection(frame_size=image_shape) )
             elif ann_type == "polygon":
                 points = merge_polygons(det_a, det_b)
                 attributes.update(points=points, filled=det_a.filled, closed=det_a.closed)
+                merged_detections.append(
+                    fol.Polyline(
+                    **attributes
+                    )
+                )
             else:
                 raise Exception(f"Annotation type {ann_type} not implemented.")
-            # create new detection
 
-            merged_detections.append(
-                fol.Detection(
-                    **attributes,
-                )
-            )
     return merged_detections
 
 def merge_relative_boxes(det_a, det_b):
