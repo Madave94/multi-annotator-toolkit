@@ -8,6 +8,7 @@ from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
 import numpy as np
 from tqdm import tqdm
+from shapely.geometry import Polygon, MultiPolygon
 
 import fiftyone as fo
 import fiftyone.operators as foo
@@ -2142,8 +2143,8 @@ def merge_instances(detections, merged_id_list: list, image_shape, ann_type):
                 # merge masks
                 attributes.update(bounding_box=None, mask=None)
             elif ann_type == "polygon":
-                # merge polygons
-                attributes.update(points=None)
+                points = merge_polygons(det_a, det_b)
+                attributes.update(points=points, filled=det_a.filled, closed=det_a.closed)
             else:
                 raise Exception(f"Annotation type {ann_type} not implemented.")
             # create new detection
@@ -2180,6 +2181,40 @@ def merge_relative_boxes(det_a, det_b):
     ]
 
     return merged_box
+
+def merge_polygons(det_a, det_b):
+    shape_a = det_a.to_shapely()
+    shape_b = det_b.to_shapely()
+
+    union_shape = shape_a.union(shape_b)
+
+    points = shapely_to_fiftyone_points(union_shape)
+
+    return points
+
+def shapely_to_fiftyone_points(geometry):
+    """
+    Converts a Shapely Polygon or MultiPolygon to FiftyOne points format
+    by removing holes and simplifying the geometry.
+
+    Parameters:
+        geometry (Polygon or MultiPolygon): The Shapely geometry to convert.
+
+    Returns:
+        list: A list of points in FiftyOne format, adhering to FiftyOne's validation.
+    """
+    def convert_polygon(polygon):
+        # Use only the exterior ring (ignoring holes)
+        return [list(coord) for coord in polygon.exterior.coords]
+
+    if isinstance(geometry, Polygon):
+        # Handle a single Polygon
+        return [convert_polygon(geometry)]  # Single list of points wrapped in another list
+    elif isinstance(geometry, MultiPolygon):
+        # Handle a MultiPolygon by converting each sub-polygon
+        return [convert_polygon(polygon) for polygon in geometry.geoms]
+    else:
+        raise ValueError("Input geometry must be a Shapely Polygon or MultiPolygon.")
 
 def check_available_annotation_types(ctx):
     available_types = ctx.params.get("available_types", [])
