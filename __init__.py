@@ -296,15 +296,15 @@ class LoadMultiAnnotatedData(foo.Operator):
         # Check which annotation fields exist
         field_schema = dataset.get_field_schema()
         messages = [
-                f"Successfully loaded multi-annotations for {num_updated} out of {len(dataset)} samples.\n"
+                f"Successfully loaded multi-annotations for {num_updated} out of {len(dataset)} samples.\n    "
             ]
 
         if 'detections' in field_schema:
             detection_counts = split_annotations_by_rater(dataset, 'detections')
             messages.append(
-                f"Detections - Total: {detection_counts['total_annotations']}, "
-                f"Moved: {detection_counts['annotations_moved']}, "
-                f"Unassigned: {detection_counts['annotations_unassigned']}."
+                f"Detections - Total: {detection_counts['total_annotations']},    \n"
+                f"Moved: {detection_counts['annotations_moved']},    \n"
+                f"Unassigned: {detection_counts['annotations_unassigned']}.    \n"
             )
         else:
             print("No 'detections' field found in the dataset.")
@@ -312,9 +312,9 @@ class LoadMultiAnnotatedData(foo.Operator):
         if 'segmentations' in field_schema:
             segmentation_counts = split_annotations_by_rater(dataset, 'segmentations')
             messages.append(
-                f"Segmentations - Total: {segmentation_counts['total_annotations']}, "
-                f"Moved: {segmentation_counts['annotations_moved']}, "
-                f"Unassigned: {segmentation_counts['annotations_unassigned']}."
+                f"Segmentations - Total: {segmentation_counts['total_annotations']},    \n"
+                f"Moved: {segmentation_counts['annotations_moved']},    \n"
+                f"Unassigned: {segmentation_counts['annotations_unassigned']}.    \n"
             )
         else:
             print("No 'segmentations' field found in the dataset.")
@@ -673,14 +673,14 @@ class CalculateIaa(foo.Operator):
             dataset.info["iaa_sampled"] = iaas
             dataset.save()
 
-        message = "Mean K-Alpha for:"
+        message = "Mean K-Alpha for:    \n"
         for iou_threshold in iou_thresholds:
             u_k_alpha = sum(alphas[str(iou_threshold)]) / len(alphas[str(iou_threshold)])
-            message += f"\n\tIoU {iou_threshold} on {ann_type}: {u_k_alpha}"
+            message += f"\tIoU {iou_threshold} on {ann_type}: {u_k_alpha}    \n"
 
         # Include a message for sampling
         if run_sampling:
-            message += f"\nSampling completed with {sampling_k} samples of size {subset_n} using random seed {random_seed_s}."
+            message += f"\tSampling completed with {sampling_k} samples of size {subset_n} using random seed {random_seed_s}.    \n"
 
         print(message)
 
@@ -1077,7 +1077,7 @@ class CalculatemmAP(foo.Operator):
         dataset.info["mmAPs"] = mmaps
         dataset.save()
 
-        message = "Modified Mean Average Precision (mmAP) for:"
+        message = "Modified Mean Average Precision (mmAP) for:    \n"
         for iou_threshold in iou_thresholds:
             if dataset_scope_choice == "Full":
                 mmap = mmaps[f"{ann_type}_{iou_threshold}"]
@@ -1088,11 +1088,11 @@ class CalculatemmAP(foo.Operator):
                 mmap = sum(list_mmap) / len(list_mmap)
             else:
                 raise Exception(f"Invalid dataset scope {dataset_scope_choice}.")
-            message += f"\n\tIoU {iou_threshold} on {ann_type}: {mmap}"
+            message += f"IoU {iou_threshold} on {ann_type}: {mmap}    \n"
 
         # Include a message for sampling
         if dataset_scope_choice == "Partial":
-            message += f"\nSampling completed with {sampling_k} samples of size {subset_n} using random seed {random_seed_s}."
+            message += f"\nSampling completed with {sampling_k} samples of size {subset_n} using random seed {random_seed_s}.    \n"
 
         print(message)
 
@@ -1626,10 +1626,37 @@ class RunErrorAnalysis(foo.Operator):
         ann_type = ctx.params.get("annotation_type")
         iou_thresholds = ctx.params.get("iou_thresholds")
 
+        all_matches = {}
+
         for sample in dataset:
             matches = self.analyse_sample(ctx, sample, ann_type, iou_thresholds)
+            all_matches[sample.filename] = matches
 
-        return None #{"matches": matches}
+        message = "Error Analysis Results:    \n"
+        error_counter = defaultdict(int)
+
+        for values in all_matches.values():
+            for iou_threshold, errors in values.items():
+                for error in errors:
+                    error_counter[str(error.errors) + "@" + str(iou_threshold)] += 1
+
+        for key, val in error_counter.items():
+            message += str(key) + ": " + str(val) + "    \n"
+
+        print(message)
+
+        return {"matches": serialize_all_matches(all_matches), "message": message}
+
+    def resolve_output(self, ctx):
+        outputs = types.Object()
+
+        # Display the message as a notice
+        outputs.view(
+            "message",
+            types.Notice(label=ctx.results.get("message", "")),
+        )
+
+        return types.Property(outputs)
 
     def analyse_sample(self, ctx, sample, ann_type, iou_thresholds):
         matches = defaultdict(list)
@@ -2027,10 +2054,7 @@ class RunErrorAnalysis(foo.Operator):
                                     det_b[ae_key(iou_threshold, rater_a)] = "mi"
 
         sample.save()
-        return None
-
-    def resolve_output(self, ctx):
-        pass
+        return matches
 
 class AnnotationError():
     def __init__(self, sample_id: str, rater_a: str, rater_b: str, errors: list, iou_threshold,
@@ -2074,6 +2098,39 @@ class AnnotationError():
 
     def __repr__(self):
         return str(self.sample_id) + ":" + str(self.errors) + "-" + self.rater_a + "/" + self.rater_b
+
+# JSON serialization
+def serialize_all_matches(all_matches):
+    # Convert the nested structure into a JSON-serializable format
+    def convert(value):
+        if isinstance(value, list):
+            # Convert each item in the list
+            return [item.to_dict() if isinstance(item, AnnotationError) else item for item in value]
+        elif isinstance(value, dict):
+            # Recursively convert each value in the dictionary
+            return {key: convert(val) for key, val in value.items()}
+        else:
+            # Return value as-is for primitive types
+            return value
+
+    return json.dumps(convert(all_matches))
+
+# JSON deserialization
+def deserialize_all_matches(json_string):
+    # Parse the JSON into a nested dictionary
+    def convert(value):
+        if isinstance(value, list):
+            # Convert each item in the list back to AnnotationError if possible
+            return [AnnotationError.from_dict(item) if isinstance(item, dict) else item for item in value]
+        elif isinstance(value, dict):
+            # Recursively convert each value in the dictionary
+            return {key: convert(val) for key, val in value.items()}
+        else:
+            # Return value as-is for primitive types
+            return value
+
+    data = json.loads(json_string)
+    return convert(data)
 
 def _sort_iou_and_filter_by_threshold_then_return_index(ious, threshold):
     """
