@@ -9,6 +9,7 @@ from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import numpy as np
 from tqdm import tqdm
 from shapely.geometry import Polygon, MultiPolygon
+from shapely.validation import make_valid
 
 import fiftyone as fo
 import fiftyone.operators as foo
@@ -1628,10 +1629,14 @@ class RunErrorAnalysis(foo.Operator):
 
         all_matches = defaultdict(list)
 
+        samples_not_able_to_process = 0
         for sample in dataset:
-            matches = self.analyse_sample(ctx, sample, ann_type, iou_thresholds)
-            for iou_threshold in iou_thresholds:
-                all_matches[str(ann_type) + "@" + str(iou_threshold)] += matches[iou_threshold]
+            try:
+                matches = self.analyse_sample(ctx, sample, ann_type, iou_thresholds)
+                for iou_threshold in iou_thresholds:
+                    all_matches[str(ann_type) + "@" + str(iou_threshold)] += matches[iou_threshold]
+            except:
+                samples_not_able_to_process += 1
 
         message = f"Error Analysis Results on {ann_type}:    \n"
         error_counter = defaultdict(int)
@@ -1642,6 +1647,10 @@ class RunErrorAnalysis(foo.Operator):
 
         for key, val in error_counter.items():
             message += str(key) + ": " + str(val) + "    \n"
+
+        if samples_not_able_to_process > 0:
+            message += f"Issue with {samples_not_able_to_process} samples. They have not been processed and are excluded from " \
+                       f"the annotation error calculation. If you are using masks, try switching to polygons."
 
         # serialize nested structures
         annotation_errors = dataset.info.get("annotation_errors", {})
@@ -1696,11 +1705,11 @@ class RunErrorAnalysis(foo.Operator):
                 element_field = "detections"
             elif ann_type == "mask":
                 ann_field_a = f"segmentations_{rater_a}"
-                ann_field_b = f"detections_{rater_b}"
+                ann_field_b = f"segmentations_{rater_b}"
                 element_field = "detections"
             elif ann_type == "polygon":
                 ann_field_a = f"segmentations_{rater_a}"
-                ann_field_b = f"detections_{rater_b}"
+                ann_field_b = f"segmentations_{rater_b}"
                 element_field = "polylines"
             else:
                 raise Exception(f"Annotation type {ann_type} does not exist or is not implemented..")
@@ -1760,6 +1769,7 @@ class RunErrorAnalysis(foo.Operator):
                     #
                     for iou_threshold in iou_thresholds:
                         for objects in cats.values():
+
                             detections_a = sorted(objects[rater_a], key=iscrowd)
                             detections_b = sorted(objects[rater_b], key=iscrowd)
 
@@ -1907,8 +1917,6 @@ class RunErrorAnalysis(foo.Operator):
 
                                 if "merged" in det_a.tags or "merged" in det_b.tags:
                                     continue
-
-                                ctx.ops.notify("Found matchable wc instance")
 
                                 # check regular conditions
                                 if (det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID or iscrowd(det_a)) or \
@@ -2259,14 +2267,39 @@ def merge_relative_boxes(det_a, det_b):
     return merged_box
 
 def merge_polygons(det_a, det_b):
-    shape_a = det_a.to_shapely()
-    shape_b = det_b.to_shapely()
+    shape_a = validate_polygon(det_a.to_shapely())
+    shape_b = validate_polygon(det_b.to_shapely())
 
     union_shape = shape_a.union(shape_b)
 
     points = shapely_to_fiftyone_points(union_shape)
 
     return points
+
+def validate_polygon(geom):
+    """
+    Validates and attempts to fix an invalid Shapely geometry.
+    Applies multiple strategies to repair invalid polygons.
+
+    Parameters:
+        geom: A Shapely geometry object (Polygon or MultiPolygon).
+
+    Returns:
+        A valid Shapely geometry object or a simplified version if repair fails.
+    """
+    try:
+        if not geom.is_valid:
+            geom = geom.buffer(0)  # Attempt to fix small invalidities
+        if not geom.is_valid:
+            geom = make_valid(geom)  # Attempt to fix further issues
+        if not geom.is_valid:
+            geom = geom.simplify(0.001, preserve_topology=True)  # Simplify if still invalid
+        return geom
+    except Exception as e:
+        print(f"Executed non-topology-preserving simplification: {e}.")
+        # Non-topology-preserving simplification as last resort
+        return geom.simplify(0.001, preserve_topology=False)
+
 
 def shapely_to_fiftyone_points(geometry):
     """
