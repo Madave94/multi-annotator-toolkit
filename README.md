@@ -1,8 +1,12 @@
 # Multi Annotator Toolkit
 
-This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. The plugin is still under 
-development. It is associated with our WACV publication [[1]](#1) looking into Label Convergence in Object Recognition
+This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. It is associated with our WACV publication [[1]](#1) looking into Label Convergence in Object Recognition
 as well as analysis of annotation errors/variations.
+
+## Important Note
+
+**The plugin is still under development, at this point only the basic feature are working and have not been tested on 
+any additional datasets besides LVIS.**
 
 ## Installation
 
