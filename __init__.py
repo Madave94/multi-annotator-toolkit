@@ -7,6 +7,7 @@ from copy import deepcopy
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
 import numpy as np
+import torch
 from tqdm import tqdm
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.validation import make_valid
@@ -1584,7 +1585,19 @@ class RunErrorAnalysis(foo.Operator):
             dark_icon="/assets/icon-dark.svg",
         )
 
+    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False):
+        ctx = dict(view=sample_collection.view())
+        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate, api_call=True)
+        return foo.execute_operator(self.uri, ctx, params=params)
+
     def resolve_input(self, ctx):
+        # --- for SDK call ---
+        api_call = ctx.params.get("api_call", False)
+        if api_call:
+            # Parameters are already provided; no need to resolve input
+            return None
+        # --- for SDK call ---
+
         inputs = types.Object()
 
         inputs.md("###### Options for running error analysis", name="mk1")
@@ -1630,7 +1643,7 @@ class RunErrorAnalysis(foo.Operator):
         all_matches = defaultdict(list)
 
         samples_not_able_to_process = 0
-        for sample in dataset:
+        for sample in tqdm(dataset, desc=f"Calculating {ann_type} annotation errors"):
             try:
                 matches = self.analyse_sample(ctx, sample, ann_type, iou_thresholds)
                 for iou_threshold in iou_thresholds:
@@ -1721,26 +1734,17 @@ class RunErrorAnalysis(foo.Operator):
             if annotations_a == [] and annotations_b == []:
                 continue
 
-            cats = defaultdict(lambda: defaultdict(list))
             iou_key = lambda iou_threshold, rater: ann_type + "_IoU_" + str(iou_threshold).replace(".", ",") + "_" + rater
             id_key = lambda iou_threshold, rater: ann_type + "_ID_" + str(iou_threshold).replace(".", ",") + "_" + rater
             ae_key = lambda iou_threshold, rater: ann_type + "_" + str(iou_threshold).replace(".", ",") + "_" + rater
-
-            for iou_threshold in iou_thresholds:
-                for annotation in annotations_a:
-                    annotation[iou_key(iou_threshold, rater_b)] = _NO_MATCH_IOU
-                    annotation[id_key(iou_threshold, rater_b)] = _NO_MATCH_ID
-                    cats[annotation.label][rater_a].append(annotation)
-                for annotation in annotations_b:
-                    annotation[iou_key(iou_threshold, rater_a)] = _NO_MATCH_IOU
-                    annotation[id_key(iou_threshold, rater_a)] = _NO_MATCH_ID
-                    cats[annotation.label][rater_b].append(annotation)
 
             # 2. handle case of rater_a has no annotations
             if annotations_a == []:
                 for annotation in annotations_b:
                     for iou_threshold in iou_thresholds:
                         annotation[ae_key(iou_threshold, rater_a)] = "mi"
+                        annotation[iou_key(iou_threshold, rater_a)] = _NO_MATCH_IOU
+                        annotation[id_key(iou_threshold, rater_a)] = _NO_MATCH_ID
                         matches[iou_threshold].append(
                             AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b, errors=["mi"],
                                             iou_threshold=iou_threshold, cls_a=None, cls_b=annotation.label, iou=None,
@@ -1751,6 +1755,8 @@ class RunErrorAnalysis(foo.Operator):
                 for annotation in annotations_a:
                     for iou_threshold in iou_thresholds:
                         annotation[ae_key(iou_threshold, rater_b)] = "mi"
+                        annotation[iou_key(iou_threshold, rater_b)] = _NO_MATCH_IOU
+                        annotation[id_key(iou_threshold, rater_b)] = _NO_MATCH_ID
                         matches[iou_threshold].append(
                             AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b, errors=["mi"],
                                             iou_threshold=iou_threshold, cls_a=annotation.label, cls_b=None, iou=None,
@@ -1758,9 +1764,15 @@ class RunErrorAnalysis(foo.Operator):
                         )
             # 4. handle normal case in which the matching is ran
             else:
-                    # 0. Preprocess IoU and Merged instances
+                    # 0. Preprocess IoU and do Merging within same classes
 
-                    # ToDO
+                    for iou_threshold in iou_thresholds:
+                        for annotation in annotations_a:
+                            annotation[iou_key(iou_threshold, rater_b)] = _NO_MATCH_IOU
+                            annotation[id_key(iou_threshold, rater_b)] = _NO_MATCH_ID
+                        for annotation in annotations_b:
+                            annotation[iou_key(iou_threshold, rater_a)] = _NO_MATCH_IOU
+                            annotation[id_key(iou_threshold, rater_a)] = _NO_MATCH_ID
 
                     #
                     # I. Evaluate correct classifications and localization within the thresholds
@@ -1768,18 +1780,29 @@ class RunErrorAnalysis(foo.Operator):
                     #       to declare this type of error
                     #
                     for iou_threshold in iou_thresholds:
-                        for objects in cats.values():
+                        # retrieve the current set of objects by categories:
+                        annotation_by_category = defaultdict(lambda: defaultdict(list))
+                        for annotation in annotations_a:
+                            annotation_by_category[annotation.label][rater_a].append(annotation)
+                        for annotation in annotations_b:
+                            annotation_by_category[annotation.label][rater_b].append(annotation)
+                        for objects in annotation_by_category.values():
+                            detections_a_by_class = sorted(objects[rater_a], key=iscrowd)
+                            detections_b_by_class = sorted(objects[rater_b], key=iscrowd)
 
-                            detections_a = sorted(objects[rater_a], key=iscrowd)
-                            detections_b = sorted(objects[rater_b], key=iscrowd)
+                            # create a list of matchable object, either the case if they are crowd object or if they
+                            matchable_detections_a_by_class, _ = \
+                                _get_check_matchable(detections_a_by_class, id_key(iou_threshold, rater_b), iscrowd)
+                            matchable_detections_b_by_class, _ = \
+                                _get_check_matchable(detections_b_by_class, id_key(iou_threshold, rater_a), iscrowd)
 
                             # compute_ious returns a matrix where the rows in this case correspond to the detections_a
                             # and the columns to detections_b
-                            ious = foui.compute_ious(detections_a, detections_b, **iou_kwargs)
+                            ious = foui.compute_ious(matchable_detections_a_by_class, matchable_detections_b_by_class, **iou_kwargs)
                             indices_2d = _sort_iou_and_filter_by_threshold_then_return_index(ious, iou_threshold)
                             for row, col in indices_2d:
-                                det_a = detections_a[row]
-                                det_b = detections_b[col]
+                                det_a = matchable_detections_a_by_class[row]
+                                det_b = matchable_detections_b_by_class[col]
 
                                 if "merged" in det_a.tags or "merged" in det_b.tags:
                                     continue
@@ -1803,10 +1826,10 @@ class RunErrorAnalysis(foo.Operator):
                                         det_b[ae_key(iou_threshold, rater_a)] = "bb"
 
                             # create a list of matchable object, either the case if they are crowd object or if they
-                            matchable_detections_a, matchable_merged_a = \
-                                _get_check_matchable(detections_a, id_key(iou_threshold, rater_b), iscrowd)
-                            matchable_detections_b, matchable_merged_b = \
-                                _get_check_matchable(detections_b, id_key(iou_threshold, rater_a), iscrowd)
+                            matchable_detections_a_by_class, matchable_merged_a_by_class = \
+                                _get_check_matchable(matchable_detections_a_by_class, id_key(iou_threshold, rater_b), iscrowd)
+                            matchable_detections_b_by_class, matchable_merged_b_by_class = \
+                                _get_check_matchable(matchable_detections_b_by_class, id_key(iou_threshold, rater_a), iscrowd)
 
                             #
                             # II. Evaluate Merged/Unmerged instances between same classes
@@ -1816,26 +1839,26 @@ class RunErrorAnalysis(foo.Operator):
                             # 3) check if matchings are found
                             # 4) create new "merged" detection or add the merging info to the existing detection
 
-                            merged_detections_a = merge_instances(matchable_detections_a, merged_id_list, image_shape, ann_type)
-                            merged_detections_b = merge_instances(matchable_detections_b, merged_id_list, image_shape, ann_type)
+                            new_merged_detections_a_by_class = merge_instances(matchable_detections_a_by_class, merged_id_list, image_shape, ann_type)
+                            new_merged_detections_b_by_class = merge_instances(matchable_detections_b_by_class, merged_id_list, image_shape, ann_type)
 
                             # add empty iou and id for none-matching items. -> done again for the new boxes/mask objects
-                            for detection in merged_detections_a:
+                            for detection in new_merged_detections_a_by_class:
                                 detection[iou_key(iou_threshold, rater_b)] = _NO_MATCH_IOU
                                 detection[id_key(iou_threshold, rater_b)] = _NO_MATCH_ID
-                            for detection in merged_detections_b:
+                            for detection in new_merged_detections_b_by_class:
                                 detection[iou_key(iou_threshold, rater_a)] = _NO_MATCH_IOU
                                 detection[id_key(iou_threshold, rater_a)] = _NO_MATCH_ID
 
                             # create a single list of matachable objects
                             # this is a design decision to again evaluate by the highest match
-                            ious = _compute_ious_efficiently(matchable_detections_a, matchable_detections_b,
-                                                             matchable_merged_a + merged_detections_a,
-                                                             matchable_merged_b + merged_detections_b,
+                            ious = _compute_ious_efficiently(matchable_detections_a_by_class, matchable_detections_b_by_class,
+                                                             matchable_merged_a_by_class + new_merged_detections_a_by_class,
+                                                             matchable_merged_b_by_class + new_merged_detections_b_by_class,
                                                              **iou_kwargs)
 
-                            matchable_detections_a = matchable_detections_a + matchable_merged_a + merged_detections_a
-                            matchable_detections_b = matchable_detections_b + matchable_merged_b + merged_detections_b
+                            matchable_detections_a = matchable_detections_a_by_class + matchable_merged_a_by_class + new_merged_detections_a_by_class
+                            matchable_detections_b = matchable_detections_b_by_class + matchable_merged_b_by_class + new_merged_detections_b_by_class
 
                             indices_2d = _sort_iou_and_filter_by_threshold_then_return_index(ious, iou_threshold)
 
@@ -1880,8 +1903,8 @@ class RunErrorAnalysis(foo.Operator):
                                     if "merged" in det_a.tags:
                                         # ensure that the merged element is not added again, and only the missing data is added
                                         merge_ids = det_a.merge_ids
-                                        if det_a not in detections_a:
-                                            detections_a.append(det_a)
+                                        if det_a not in annotations_a:
+                                            annotations_a.append(det_a)
                                             merged_id_list.append(tuple(merge_ids))
                                         for det_a_child in matchable_detections_a:
                                             if det_a_child.id in merge_ids and det_a_child[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
@@ -1890,8 +1913,8 @@ class RunErrorAnalysis(foo.Operator):
                                                 det_a_child[ae_key(iou_threshold, rater_b)] = "mu"
                                     if "merged" in det_b.tags:
                                         merge_ids = det_b.merge_ids
-                                        if det_b not in detections_b:
-                                            detections_b.append(det_b)
+                                        if det_b not in annotations_b:
+                                            annotations_b.append(det_b)
                                             merged_id_list.append(tuple(merge_ids))
                                         for det_b_child in matchable_detections_b:
                                             if det_b_child.id in merge_ids and det_b_child[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
@@ -1899,177 +1922,178 @@ class RunErrorAnalysis(foo.Operator):
                                                 det_b_child[iou_key(iou_threshold, rater_a)] = ious[row, col]
                                                 det_b_child[ae_key(iou_threshold, rater_a)] = "mu"
 
-                            #
-                            # III. Run the same as above for I. but no for mismatched classes
-                            #
-                            # create a list of matchable object, either the case if they are crowd object or if they didn't match yet
-                            matchable_detections_a, _ = _get_check_matchable(detections_a, id_key(iou_threshold, rater_b), iscrowd)
-                            matchable_detections_b, _ = _get_check_matchable(detections_b, id_key(iou_threshold, rater_a), iscrowd)
+                        # <- ident back to go out of per-class loop
+                        #
+                        # III. Run the same as above for I. but no for mismatched classes
+                        #
+                        # create a list of matchable object, either the case if they are crowd object or if they didn't match yet
+                        matchable_detections_a, _ = _get_check_matchable(annotations_a, id_key(iou_threshold, rater_b), iscrowd)
+                        matchable_detections_b, _ = _get_check_matchable(annotations_b, id_key(iou_threshold, rater_a), iscrowd)
 
-                            # check for significant overlaps but classes that do not match
-                            # so same as for the first set but this time looking for wrong class
-                            ious = foui.compute_ious(matchable_detections_a, matchable_detections_b, **iou_kwargs)
-                            indices_2d = _sort_iou_and_filter_by_threshold_then_return_index(ious, iou_threshold)
+                        # check for significant overlaps but classes that do not match
+                        # so same as for the first set but this time looking for wrong class
+                        ious = foui.compute_ious(matchable_detections_a, matchable_detections_b, **iou_kwargs)
+                        indices_2d = _sort_iou_and_filter_by_threshold_then_return_index(ious, iou_threshold)
 
-                            for row, col in indices_2d:
-                                det_a = matchable_detections_a[row]
-                                det_b = matchable_detections_b[col]
+                        for row, col in indices_2d:
+                            det_a = matchable_detections_a[row]
+                            det_b = matchable_detections_b[col]
 
-                                if "merged" in det_a.tags or "merged" in det_b.tags:
-                                    continue
+                            if "merged" in det_a.tags or "merged" in det_b.tags:
+                                continue
 
-                                # check regular conditions
-                                if (det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID or iscrowd(det_a)) or \
-                                        (det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID or iscrowd(det_b)):
-                                    matches[iou_threshold].append(
-                                        AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
-                                                        errors=["wc"],
-                                                        iou_threshold=iou_threshold, cls_a=det_a.label,
-                                                        cls_b=det_b.label,
-                                                        iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
-                                                        child_ids=None)
-                                    )
-                                    if det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
-                                        det_a[id_key(iou_threshold, rater_b)] = det_b.id
-                                        det_a[iou_key(iou_threshold, rater_b)] = ious[row, col]
-                                        det_a[ae_key(iou_threshold, rater_b)] = "wc"
-                                    if det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
-                                        det_b[id_key(iou_threshold, rater_a)] = det_a.id
-                                        det_b[iou_key(iou_threshold, rater_a)] = ious[row, col]
-                                        det_b[ae_key(iou_threshold, rater_a)] = "wc"
-
-                            #
-                            # IV. Run the same as for II. but now allow mismatched classes
-                            #
-                            # allowing matching of elements of the same class
-                            # Do step 1) to 4) as above, from matching the classes. But now allow the matching of
-                            # merged elements from class X and original classes from class y, so inter-class matching
-                            # this would be a double error wc+mu (wrong class + merging issue)
-
-                            # create a list of matchable object, either the case if they are crowd object or if they
-                            matchable_detections_a, matchable_merged_a = _get_check_matchable(detections_a,
-                                                                                              id_key(iou_threshold, rater_b),
-                                                                                              iscrowd)
-                            matchable_detections_b, matchable_merged_b = _get_check_matchable(detections_b,
-                                                                                              id_key(iou_threshold, rater_a),
-                                                                                              iscrowd)
-
-                            merged_detections_a = merge_instances(matchable_detections_a, merged_id_list, image_shape, ann_type)
-                            merged_detections_b = merge_instances(matchable_detections_b, merged_id_list, image_shape, ann_type)
-
-                            # add empty iou and id for none-matching items. -> done again for the new boxes/mask objects
-                            for detection in merged_detections_a:
-                                detection[iou_key(iou_threshold, rater_b)] = _NO_MATCH_IOU
-                                detection[id_key(iou_threshold, rater_b)] = _NO_MATCH_ID
-                            for detection in merged_detections_b:
-                                detection[iou_key(iou_threshold, rater_a)] = _NO_MATCH_IOU
-                                detection[id_key(iou_threshold, rater_a)] = _NO_MATCH_ID
-
-                            # create a single list of matachable objects
-                            # this is a design decision to again evaluate by the highest match
-                            ious = _compute_ious_efficiently(matchable_detections_a, matchable_detections_b,
-                                                             matchable_merged_a + merged_detections_a,
-                                                             matchable_merged_b + merged_detections_b,
-                                                             **iou_kwargs)
-
-                            matchable_detections_a = matchable_detections_a + matchable_merged_a + merged_detections_a
-                            matchable_detections_b = matchable_detections_b + matchable_merged_b + merged_detections_b
-
-                            indices_2d = _sort_iou_and_filter_by_threshold_then_return_index(ious, iou_threshold)
-
-                            # start finding matches
-                            for row, col in indices_2d:
-                                det_a = matchable_detections_a[row]
-                                det_b = matchable_detections_b[col]
-
-                                # check if both are not merged
-                                if "merged" in det_a.tags and "merged" in det_b.tags:
-                                    continue
-
-                                if not "merged" in det_a.tags and not "merged" in det_b.tags:
-                                    raise Exception(
-                                        "There should never be the case that two unmerged instances are attempted to"
-                                        "be matched during the merging issue process.")
-
-                                # check regular conditions
-                                if (det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID or iscrowd(det_a)) or \
-                                        (det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID or iscrowd(det_b)):
-                                    # if this is true this means that each of the detections is either not matched or a crowed
-                                    matches[iou_threshold].append(
-                                        AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
-                                                        errors=["mu", "wc"],
-                                                        iou_threshold=iou_threshold, cls_a=det_a.label,
-                                                        cls_b=det_b.label,
-                                                        iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
-                                                        child_ids=det_a.merge_ids if "merged" in det_a.tags else det_b.merge_ids)
-                                    )
-                                    if det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
-                                        det_a[id_key(iou_threshold, rater_b)] = det_b.id
-                                        det_a[iou_key(iou_threshold, rater_b)] = ious[row, col]
-                                        det_a[ae_key(iou_threshold, rater_b)] = "wc+mu"
-                                    if det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
-                                        det_b[id_key(iou_threshold, rater_a)] = det_a.id
-                                        det_b[iou_key(iou_threshold, rater_a)] = ious[row, col]
-                                        det_b[ae_key(iou_threshold, rater_a)] = "wc+mu"
-
-                                    # additional to the two usual conditions, the two single instances will get updated,
-                                    # since they have been matched at this point they should not be included into the matchable
-                                    # items anymore
-                                    if "merged" in det_a.tags:
-                                        # ensure that the merged element is not added again, and only the missing data is added
-                                        merge_ids = det_a.merge_ids
-                                        if det_a not in detections_a:
-                                            detections_a.append(det_a)
-                                            merged_id_list.append(tuple(merge_ids))
-                                        for det_a_child in matchable_detections_a:
-                                            if det_a_child.id in merge_ids and det_a_child[
-                                                id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
-                                                det_a_child[id_key(iou_threshold, rater_b)] = det_b.id
-                                                det_a_child[iou_key(iou_threshold, rater_b)] = ious[row, col]
-                                                det_a_child[ae_key(iou_threshold, rater_b)] = "wc+mu"
-                                    if "merged" in det_b.tags:
-                                        # ensure that the merged element is not added again, and only the missing data is added
-                                        merge_ids = det_b.merge_ids
-                                        if det_b not in detections_b:
-                                            detections_b.append(det_b)
-                                            merged_id_list.append(tuple(merge_ids))
-                                        for det_b_child in matchable_detections_b:
-                                            if det_b_child.id in merge_ids and det_b_child[
-                                                id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
-                                                det_b_child[id_key(iou_threshold, rater_a)] = det_a.id
-                                                det_b_child[iou_key(iou_threshold, rater_a)] = ious[row, col]
-                                                det_b_child[ae_key(iou_threshold, rater_a)] = "wc+mu"
-
-                            # rest is overlooked or unnecessary instance
-                            matchable_detections_a, _ = _get_check_matchable(detections_a, id_key(iou_threshold, rater_b), iscrowd)
-                            matchable_detections_b, _ = _get_check_matchable(detections_b, id_key(iou_threshold, rater_a), iscrowd)
-
-                            for det_a in matchable_detections_a:
-                                # don't count merged instances as mi
-                                if "merged" in det_a.tags:
-                                    continue
+                            # check regular conditions
+                            if (det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID or iscrowd(det_a)) or \
+                                    (det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID or iscrowd(det_b)):
+                                matches[iou_threshold].append(
+                                    AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
+                                                    errors=["wc"],
+                                                    iou_threshold=iou_threshold, cls_a=det_a.label,
+                                                    cls_b=det_b.label,
+                                                    iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
+                                                    child_ids=None)
+                                )
                                 if det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
-                                    matches[iou_threshold].append(
-                                        AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
-                                                        errors=["mi"],
-                                                        iou_threshold=iou_threshold, cls_a=det_a.label, cls_b=None,
-                                                        iou=None,
-                                                        id_a=det_a.id, id_b=None, child_ids=None)
-                                    )
-                                    det_a[ae_key(iou_threshold, rater_b)] = "mi"
-                            for det_b in matchable_detections_b:
-                                # don't count merged instances as mi
-                                if "merged" in det_b.tags:
-                                    continue
+                                    det_a[id_key(iou_threshold, rater_b)] = det_b.id
+                                    det_a[iou_key(iou_threshold, rater_b)] = ious[row, col]
+                                    det_a[ae_key(iou_threshold, rater_b)] = "wc"
                                 if det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
-                                    matches[iou_threshold].append(
-                                        AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
-                                                        errors=["mi"],
-                                                        iou_threshold=iou_threshold, cls_a=None, cls_b=det_b.label,
-                                                        iou=None,
-                                                        id_a=None, id_b=det_b.id, child_ids=None)
-                                    )
-                                    det_b[ae_key(iou_threshold, rater_a)] = "mi"
+                                    det_b[id_key(iou_threshold, rater_a)] = det_a.id
+                                    det_b[iou_key(iou_threshold, rater_a)] = ious[row, col]
+                                    det_b[ae_key(iou_threshold, rater_a)] = "wc"
+
+                        #
+                        # IV. Run the same as for II. but now allow mismatched classes
+                        #
+                        # allowing matching of elements of the same class
+                        # Do step 1) to 4) as above, from matching the classes. But now allow the matching of
+                        # merged elements from class X and original classes from class y, so inter-class matching
+                        # this would be a double error wc+mu (wrong class + merging issue)
+
+                        # create a list of matchable object, either the case if they are crowd object or if they
+                        matchable_detections_a, matchable_merged_a = _get_check_matchable(matchable_detections_a,
+                                                                                          id_key(iou_threshold, rater_b),
+                                                                                          iscrowd)
+                        matchable_detections_b, matchable_merged_b = _get_check_matchable(matchable_detections_b,
+                                                                                          id_key(iou_threshold, rater_a),
+                                                                                          iscrowd)
+
+                        merged_detections_a = merge_instances(matchable_detections_a, merged_id_list, image_shape, ann_type)
+                        merged_detections_b = merge_instances(matchable_detections_b, merged_id_list, image_shape, ann_type)
+
+                        # add empty iou and id for none-matching items. -> done again for the new boxes/mask objects
+                        for detection in merged_detections_a:
+                            detection[iou_key(iou_threshold, rater_b)] = _NO_MATCH_IOU
+                            detection[id_key(iou_threshold, rater_b)] = _NO_MATCH_ID
+                        for detection in merged_detections_b:
+                            detection[iou_key(iou_threshold, rater_a)] = _NO_MATCH_IOU
+                            detection[id_key(iou_threshold, rater_a)] = _NO_MATCH_ID
+
+                        # create a single list of matachable objects
+                        # this is a design decision to again evaluate by the highest match
+                        ious = _compute_ious_efficiently(matchable_detections_a, matchable_detections_b,
+                                                         matchable_merged_a + merged_detections_a,
+                                                         matchable_merged_b + merged_detections_b,
+                                                         **iou_kwargs)
+
+                        matchable_detections_a = matchable_detections_a + matchable_merged_a + merged_detections_a
+                        matchable_detections_b = matchable_detections_b + matchable_merged_b + merged_detections_b
+
+                        indices_2d = _sort_iou_and_filter_by_threshold_then_return_index(ious, iou_threshold)
+
+                        # start finding matches
+                        for row, col in indices_2d:
+                            det_a = matchable_detections_a[row]
+                            det_b = matchable_detections_b[col]
+
+                            # check if both are not merged
+                            if "merged" in det_a.tags and "merged" in det_b.tags:
+                                continue
+
+                            if not "merged" in det_a.tags and not "merged" in det_b.tags:
+                                raise Exception(
+                                    "There should never be the case that two unmerged instances are attempted to"
+                                    "be matched during the merging issue process.")
+
+                            # check regular conditions
+                            if (det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID or iscrowd(det_a)) or \
+                                    (det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID or iscrowd(det_b)):
+                                # if this is true this means that each of the detections is either not matched or a crowed
+                                matches[iou_threshold].append(
+                                    AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
+                                                    errors=["mu", "wc"],
+                                                    iou_threshold=iou_threshold, cls_a=det_a.label,
+                                                    cls_b=det_b.label,
+                                                    iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
+                                                    child_ids=det_a.merge_ids if "merged" in det_a.tags else det_b.merge_ids)
+                                )
+                                if det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
+                                    det_a[id_key(iou_threshold, rater_b)] = det_b.id
+                                    det_a[iou_key(iou_threshold, rater_b)] = ious[row, col]
+                                    det_a[ae_key(iou_threshold, rater_b)] = "wc+mu"
+                                if det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
+                                    det_b[id_key(iou_threshold, rater_a)] = det_a.id
+                                    det_b[iou_key(iou_threshold, rater_a)] = ious[row, col]
+                                    det_b[ae_key(iou_threshold, rater_a)] = "wc+mu"
+
+                                # additional to the two usual conditions, the two single instances will get updated,
+                                # since they have been matched at this point they should not be included into the matchable
+                                # items anymore
+                                if "merged" in det_a.tags:
+                                    # ensure that the merged element is not added again, and only the missing data is added
+                                    merge_ids = det_a.merge_ids
+                                    if det_a not in annotations_a:
+                                        annotations_a.append(det_a)
+                                        merged_id_list.append(tuple(merge_ids))
+                                    for det_a_child in matchable_detections_a:
+                                        if det_a_child.id in merge_ids and det_a_child[
+                                            id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
+                                            det_a_child[id_key(iou_threshold, rater_b)] = det_b.id
+                                            det_a_child[iou_key(iou_threshold, rater_b)] = ious[row, col]
+                                            det_a_child[ae_key(iou_threshold, rater_b)] = "wc+mu"
+                                if "merged" in det_b.tags:
+                                    # ensure that the merged element is not added again, and only the missing data is added
+                                    merge_ids = det_b.merge_ids
+                                    if det_b not in annotations_b:
+                                        annotations_b.append(det_b)
+                                        merged_id_list.append(tuple(merge_ids))
+                                    for det_b_child in matchable_detections_b:
+                                        if det_b_child.id in merge_ids and det_b_child[
+                                            id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
+                                            det_b_child[id_key(iou_threshold, rater_a)] = det_a.id
+                                            det_b_child[iou_key(iou_threshold, rater_a)] = ious[row, col]
+                                            det_b_child[ae_key(iou_threshold, rater_a)] = "wc+mu"
+
+                        # rest is overlooked or unnecessary instance
+                        matchable_detections_a, _ = _get_check_matchable(annotations_a, id_key(iou_threshold, rater_b), iscrowd)
+                        matchable_detections_b, _ = _get_check_matchable(annotations_b, id_key(iou_threshold, rater_a), iscrowd)
+
+                        for det_a in matchable_detections_a:
+                            # don't count merged instances as mi
+                            if "merged" in det_a.tags:
+                                continue
+                            if det_a[id_key(iou_threshold, rater_b)] == _NO_MATCH_ID:
+                                matches[iou_threshold].append(
+                                    AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
+                                                    errors=["mi"],
+                                                    iou_threshold=iou_threshold, cls_a=det_a.label, cls_b=None,
+                                                    iou=None,
+                                                    id_a=det_a.id, id_b=None, child_ids=None)
+                                )
+                                det_a[ae_key(iou_threshold, rater_b)] = "mi"
+                        for det_b in matchable_detections_b:
+                            # don't count merged instances as mi
+                            if "merged" in det_b.tags:
+                                continue
+                            if det_b[id_key(iou_threshold, rater_a)] == _NO_MATCH_ID:
+                                matches[iou_threshold].append(
+                                    AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
+                                                    errors=["mi"],
+                                                    iou_threshold=iou_threshold, cls_a=None, cls_b=det_b.label,
+                                                    iou=None,
+                                                    id_a=None, id_b=det_b.id, child_ids=None)
+                                )
+                                det_b[ae_key(iou_threshold, rater_a)] = "mi"
 
         sample.save()
         return matches
@@ -2288,13 +2312,14 @@ def validate_polygon(geom):
         A valid Shapely geometry object or a simplified version if repair fails.
     """
     try:
-        if not geom.is_valid:
-            geom = geom.buffer(0)  # Attempt to fix small invalidities
-        if not geom.is_valid:
-            geom = make_valid(geom)  # Attempt to fix further issues
-        if not geom.is_valid:
-            geom = geom.simplify(0.001, preserve_topology=True)  # Simplify if still invalid
-        return geom
+        with suppress_output():
+            if not geom.is_valid:
+                geom = geom.buffer(0)  # Attempt to fix small invalidities
+            if not geom.is_valid:
+                geom = make_valid(geom)  # Attempt to fix further issues
+            if not geom.is_valid:
+                geom = geom.simplify(0.001, preserve_topology=True)  # Simplify if still invalid
+            return geom
     except Exception as e:
         print(f"Executed non-topology-preserving simplification: {e}.")
         # Non-topology-preserving simplification as last resort
@@ -2332,6 +2357,7 @@ class ErrorAnalysisPanel(foo.Panel):
             name="error_analysis_panel",
             label="Annotation Error Analysis",
             allow_multiple=False,
+            surfaces="grid",
             help_markdown="A panel to visualize and select annotation errors",
             icon="/assets/icon.svg",
             light_icon="/assets/icon-light.svg",
@@ -2342,11 +2368,137 @@ class ErrorAnalysisPanel(foo.Panel):
         panel = types.Object()
 
         panel.plot(
-            "histogram"
+            "histogram",
+            layout={
+                "title": "Annotation Error Distribution",
+                "automargin": True,
+                "barmode": "stack",
+            },
+            width=95,
+            on_click=self.on_histogram_click
+        )
+
+        table = types.TableView()
+
+        table.add_column("annotation_type", label="Annotation Type")
+        table.add_column("iou_threshold", label="IoU Threshold")
+        table.add_column("bb", label="Correct Instances")
+        table.add_column("bb-rel", label="C.I. %")
+        table.add_column("mi", label="Missing/ Overlooked I.")
+        table.add_column("mi-rel", label="M/O %")
+        table.add_column("wc", label="Mismatched Class A.")
+        table.add_column("wc-rel", label="M.C. %")
+        table.add_column("mu", label="Merged/ Unmerged I.")
+        table.add_column("mu-rel", label="M/U %")
+
+        panel.obj(
+            name="table",
+            view=table,
+            label="Annotation Errors"
+        )
+
+        return types.Property(
+            panel,
+            view=types.GridView(align_x="center", align_y="center", width=100, height=100),
         )
 
     def on_load(self, ctx):
-        pass
+        name_mapping = {
+            "bb": "Correct Instance",
+            "mi": "Missing/Overlooked Instance",
+            "wc": "Mismatched Class Assignment",
+            "mu": "Merged/Unmerged Instance"
+        }
+        color_mapping = {
+            "bb": "#4E96BE",
+            "mi": "#AF8742",
+            "wc": "#56C0A3",
+            "mu": "#B77542"
+        }
+        dataset = ctx.dataset
+        annotation_errors = dataset.info.get("annotation_errors", {})
+        if annotation_errors != {}:
+            annotation_errors = json.loads(annotation_errors)
+        table_data = []
+        traces = []
+        for key, values in annotation_errors.items():
+            ann_type, iou_threshold = key.split("@")
+            ae_counter = defaultdict(int)
+            total_errors = 0
+            for value in values:
+                errors = value["errors"]
+                for error in errors:
+                    ae_counter[error] += 1
+                    total_errors +=1
+            error_percentage = lambda err_key: str(round(ae_counter[err_key] / total_errors * 100, 2)) + "%"
+            table_data.append({
+                "key": key,
+                "iou_threshold": ann_type,
+                "annotation_type": iou_threshold,
+                "bb": ae_counter["bb"],
+                "bb-rel": error_percentage("bb"),
+                "mi": ae_counter["mi"],
+                "mi-rel": error_percentage("mi"),
+                "wc": ae_counter["wc"],
+                "wc-rel": error_percentage("wc"),
+                "mu": ae_counter["mu"],
+                "mu-rel": error_percentage("mu"),
+                "total": total_errors,
+            })
+            for error_type, count in ae_counter.items():
+                traces.append({
+                    "type": "histogram",
+                    "name":  name_mapping[error_type],
+                    "bingroup": key,
+                    "x": [key] * count,  # Ensure the errors are grouped by key
+                    "marker": {"color": color_mapping[error_type]},  # Add color based on error type
+                })
+        ctx.panel.state.table = table_data
+        ctx.panel.data.histogram = traces
+
+        ctx.ops.split_panel("error_analysis_panel", layout="horizontal")
+
+    def on_histogram_click(self, ctx):
+        name_mapping = {
+            "Correct Instance": "bb",
+            "Missing/Overlooked Instance": "mi",
+            "Mismatched Class Assignment": "wc",
+            "Merged/Unmerged Instance": "mu"
+        }
+        key = ctx.params.get("x")
+        error_type = name_mapping[ctx.params.get("trace")]
+        ann_type, iou_threshold = key.split("@")
+
+        field_set = set()
+        rater_set = set()
+        for sample in ctx.dataset:
+            for rater in sample.rater_list:
+                if ann_type == "bounding box":
+                    ann_field = f"detections_{rater}"
+                elif ann_type == "mask":
+                    ann_field = f"segmentations_{rater}"
+                elif ann_type == "polygon":
+                    ann_field = f"segmentations_{rater}"
+                else:
+                    raise Exception(f"Annotation type {ann_type} does not exist or is not implemented..")
+                field_set.add(ann_field)
+                rater_set.add(rater)
+
+        view = ctx.dataset.select_fields(list(field_set))
+
+        for field in field_set:
+            for rater in rater_set:
+                if rater in field:
+                    continue
+                filter = ann_type + "_" + str(iou_threshold).replace(".", ",") + "_" + rater
+                view = view.filter_labels(
+                    field,
+                    fo.ViewField(filter) == error_type
+                )
+
+        if view is not None:
+            ctx.ops.set_view(view=view)
+
 
 def check_available_annotation_types(ctx):
     available_types = ctx.params.get("available_types", [])
