@@ -7,7 +7,6 @@ from copy import deepcopy
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
 import numpy as np
-import torch
 from tqdm import tqdm
 from shapely.geometry import Polygon, MultiPolygon
 from shapely.validation import make_valid
@@ -2364,44 +2363,6 @@ class ErrorAnalysisPanel(foo.Panel):
             dark_icon="/assets/icon-dark.svg",
         )
 
-    def render(self, ctx):
-        panel = types.Object()
-
-        panel.plot(
-            "histogram",
-            layout={
-                "title": "Annotation Error Distribution",
-                "automargin": True,
-                "barmode": "stack",
-            },
-            width=95,
-            on_click=self.on_histogram_click
-        )
-
-        table = types.TableView()
-
-        table.add_column("annotation_type", label="Annotation Type")
-        table.add_column("iou_threshold", label="IoU Threshold")
-        table.add_column("bb", label="Correct Instances")
-        table.add_column("bb-rel", label="C.I. %")
-        table.add_column("mi", label="Missing/ Overlooked I.")
-        table.add_column("mi-rel", label="M/O %")
-        table.add_column("wc", label="Mismatched Class A.")
-        table.add_column("wc-rel", label="M.C. %")
-        table.add_column("mu", label="Merged/ Unmerged I.")
-        table.add_column("mu-rel", label="M/U %")
-
-        panel.obj(
-            name="table",
-            view=table,
-            label="Annotation Errors"
-        )
-
-        return types.Property(
-            panel,
-            view=types.GridView(align_x="center", align_y="center", width=100, height=100),
-        )
-
     def on_load(self, ctx):
         name_mapping = {
             "bb": "Correct Instance",
@@ -2499,6 +2460,43 @@ class ErrorAnalysisPanel(foo.Panel):
         if view is not None:
             ctx.ops.set_view(view=view)
 
+    def render(self, ctx):
+        panel = types.Object()
+
+        panel.plot(
+            "histogram",
+            layout={
+                "title": "Annotation Error Distribution",
+                "automargin": True,
+                "barmode": "stack",
+            },
+            width=95,
+            on_click=self.on_histogram_click
+        )
+
+        table = types.TableView()
+
+        table.add_column("annotation_type", label="Annotation Type")
+        table.add_column("iou_threshold", label="IoU Threshold")
+        table.add_column("bb", label="Correct Instances")
+        table.add_column("bb-rel", label="C.I. %")
+        table.add_column("mi", label="Missing/ Overlooked I.")
+        table.add_column("mi-rel", label="M/O %")
+        table.add_column("wc", label="Mismatched Class A.")
+        table.add_column("wc-rel", label="M.C. %")
+        table.add_column("mu", label="Merged/ Unmerged I.")
+        table.add_column("mu-rel", label="M/U %")
+
+        panel.obj(
+            name="table",
+            view=table,
+            label="Annotation Errors"
+        )
+
+        return types.Property(
+            panel,
+            view=types.GridView(align_x="center", align_y="center", width=100, height=100),
+        )
 
 def check_available_annotation_types(ctx):
     available_types = ctx.params.get("available_types", [])
