@@ -1626,26 +1626,36 @@ class RunErrorAnalysis(foo.Operator):
         ann_type = ctx.params.get("annotation_type")
         iou_thresholds = ctx.params.get("iou_thresholds")
 
-        all_matches = {}
+        all_matches = defaultdict(list)
 
         for sample in dataset:
             matches = self.analyse_sample(ctx, sample, ann_type, iou_thresholds)
-            all_matches[sample.filename] = matches
+            for iou_threshold in iou_thresholds:
+                all_matches[str(ann_type) + "@" + str(iou_threshold)] += matches[iou_threshold]
 
-        message = "Error Analysis Results:    \n"
+        message = f"Error Analysis Results on {ann_type}:    \n"
         error_counter = defaultdict(int)
 
-        for values in all_matches.values():
-            for iou_threshold, errors in values.items():
-                for error in errors:
-                    error_counter[str(error.errors) + "@" + str(iou_threshold)] += 1
+        for iou_threshold, errors in all_matches.items():
+            for error in errors:
+                error_counter[str(error.errors) + "@" + str(iou_threshold)] += 1
 
         for key, val in error_counter.items():
             message += str(key) + ": " + str(val) + "    \n"
 
+        # serialize nested structures
+        annotation_errors = dataset.info.get("annotation_errors", {})
+        if annotation_errors != {}:
+            annotation_errors = json.loads(annotation_errors)
+        annotation_errors.update(
+            serialize_all_matches(all_matches)
+        )
+        dataset.info["annotation_errors"] = json.dumps(annotation_errors)
+        dataset.save()
+
         print(message)
 
-        return {"matches": serialize_all_matches(all_matches), "message": message}
+        return {"message": message}
 
     def resolve_output(self, ctx):
         outputs = types.Object()
@@ -2113,7 +2123,8 @@ def serialize_all_matches(all_matches):
             # Return value as-is for primitive types
             return value
 
-    return json.dumps(convert(all_matches))
+    #return json.dumps(convert(all_matches))
+    return convert(all_matches)
 
 # JSON deserialization
 def deserialize_all_matches(json_string):
@@ -2281,6 +2292,29 @@ def shapely_to_fiftyone_points(geometry):
     else:
         raise ValueError("Input geometry must be a Shapely Polygon or MultiPolygon.")
 
+class ErrorAnalysisPanel(foo.Panel):
+    @property
+    def config(self):
+        return foo.PanelConfig(
+            name="error_analysis_panel",
+            label="Annotation Error Analysis",
+            allow_multiple=False,
+            help_markdown="A panel to visualize and select annotation errors",
+            icon="/assets/icon.svg",
+            light_icon="/assets/icon-light.svg",
+            dark_icon="/assets/icon-dark.svg",
+        )
+
+    def render(self, ctx):
+        panel = types.Object()
+
+        panel.plot(
+            "histogram"
+        )
+
+    def on_load(self, ctx):
+        pass
+
 def check_available_annotation_types(ctx):
     available_types = ctx.params.get("available_types", [])
     dataset = ctx.dataset
@@ -2375,3 +2409,4 @@ def register(plugin):
     plugin.register(CalculatemmAP)
     plugin.register(ConvergenceThresholdPanel)
     plugin.register(RunErrorAnalysis)
+    plugin.register(ErrorAnalysisPanel)
