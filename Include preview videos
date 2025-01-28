@@ -2,20 +2,15 @@
 
 # Multi Annotator Toolkit
 
-<div style="display: flex; align-items: center;">
-  <div style="flex: 1;">
-    This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. It is associated with our WACV publication <a href="#1">[1]</a> looking into Label Convergence in Object Recognition as well as analysis of annotation errors/variations.
-  </div>
-  <div style="flex: 1; padding-left: 10px;">
-    <figure style="margin: 0;">
-      <img src="assets/teaser_noise.png" alt="Noisy Labels" style="width: 300px; height: auto;">
-      <figcaption style="font-size: 0.9em; text-align: center; margin-top: 5px;">
-        Example of noisy annotation on a concrete structure, annotated by multiple civil engineers. Different colors indicate different annotators.
-      </figcaption>
-    </figure>
-  </div>
-</div>
+This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. It is associated with our WACV publication [1](#1) looking into Label Convergence in Object Recognition as well as analysis of annotation errors/variations.
 
+<p align="center">
+  <img src="assets/teaser_noise.png" alt="Noisy Labels" width="300">
+</p>
+
+<p align="center" style="font-size: 0.9em;">
+  <em>Example of noisy annotation on a concrete structure, annotated by multiple civil engineers. Different colors indicate different annotators.</em>
+</p>
 
 ## Important Note
 
@@ -28,6 +23,16 @@ any additional datasets besides LVIS.**
 
 The plugin currently provides multiple functionalities to analyze dataset on three different levels - the whole dataset,
 entire images or on a per-class basis.
+
+## Examples
+
+https://github.com/user-attachments/assets/5e310934-7518-429f-b850-424f4476cd9c
+
+This example shows a user running the per-instance based error-analysis and selecting to visualize a specific variation-type. The stacked histograms show the error distribution for specific localization qualities and tasks.
+
+https://github.com/user-attachments/assets/8b65fbc2-35be-4833-90f7-5549dc62c3bb
+
+Another example showing a user running the inter-annotator-calculation and afterwards visualizing images with bad agreement to inspect them. The hisgram can be set to different localization thresholds and tasks.
 
 ## Installation
 
