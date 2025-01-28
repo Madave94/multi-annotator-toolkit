@@ -1,12 +1,33 @@
+
+
 # Multi Annotator Toolkit
 
-This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. It is associated with our WACV publication [[1]](#1) looking into Label Convergence in Object Recognition
-as well as analysis of annotation errors/variations.
+<div style="display: flex; align-items: center;">
+  <div style="flex: 1;">
+    This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. It is associated with our WACV publication <a href="#1">[1]</a> looking into Label Convergence in Object Recognition as well as analysis of annotation errors/variations.
+  </div>
+  <div style="flex: 1; padding-left: 10px;">
+    <figure style="margin: 0;">
+      <img src="assets/teaser_noise.png" alt="Noisy Labels" style="width: 300px; height: auto;">
+      <figcaption style="font-size: 0.9em; text-align: center; margin-top: 5px;">
+        Example of noisy annotation on a concrete structure, annotated by multiple civil engineers. Different colors indicate different annotators.
+      </figcaption>
+    </figure>
+  </div>
+</div>
+
 
 ## Important Note
 
 **The plugin is still under development, at this point only the basic feature are working and have not been tested on 
 any additional datasets besides LVIS.**
+
+## Overview
+
+![](assets/plugin-overview.png)
+
+The plugin currently provides multiple functionalities to analyze dataset on three different levels - the whole dataset,
+entire images or on a per-class basis.
 
 ## Installation
 

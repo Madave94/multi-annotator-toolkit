@@ -1676,6 +1676,8 @@ class RunErrorAnalysis(foo.Operator):
 
         print(message)
 
+        ctx.ops.open_panel("error_analysis_panel")
+
         return {"message": message}
 
     def resolve_output(self, ctx):
