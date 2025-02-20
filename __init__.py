@@ -747,6 +747,7 @@ class IAAPanel(foo.Panel):
         # initialize default min/max values
         ctx.panel.state.max_value = 1.0
         ctx.panel.state.min_value = -1.0
+        ctx.panel.set_state("v_stack.double_slider", [-1.0,1.0])
 
         # set states
         ctx.panel.state.ann_type_selection = ann_type_selection
@@ -823,9 +824,30 @@ class IAAPanel(foo.Panel):
         if view is not None:
             ctx.ops.set_view(view=view)
 
+    def slider_change(self,ctx):
+        #ctx.ops.notify(str(ctx.params))
+        #ctx.ops.notify(str(ctx.panel.state))
+        bin_range = ctx.params.get("value")
+        min_value = bin_range[0]
+        max_value = bin_range[1]
+
+        ann_type = ctx.panel.state.ann_type_selection
+        iou_value = ctx.panel.state.iou_selection
+        field_name = "iaa.{}-{}".format(ann_type, iou_value)
+
+        ctx.panel.state.min_value = min_value
+        ctx.panel.state.max_value = max_value
+        self.select_values(ctx)
+        self.set_histogram_values(ctx)
+
+        view = ctx.dataset.match((F(field_name) >= min_value) & (F(field_name) <= max_value))
+
+        if view is not None:
+            ctx.ops.set_view(view=view)
+
     def render(self, ctx):
         panel = types.Object()
-        v_stack = panel.v_stack("v_stack", align_x="center", align_y="center", width=100, gap=10)
+        v_stack = panel.v_stack("v_stack", align_x="center", align_y="center", width=100, gap=2)
 
         h_stack = v_stack.h_stack("h_stack", align_x="center", align_y="center", gap=5)
 
@@ -890,11 +912,25 @@ class IAAPanel(foo.Panel):
                 "displayModeBar": False,
                 "responsive": True,
             },
-            on_click=self.on_histogram_click,
+            #on_click=self.on_histogram_click,
             height=75,
         )
 
+        v_stack.view(
+            "double_slider",
+            on_change=self.slider_change,
+            view=types.SliderView(
+                value_precision=3,
+                variant="withInputs",
+                min=-1.0,  # Fixed range min
+                max=1.0,  # Fixed range max
+                label="Threshold",
+                value_label_display="auto",
+            ),
+        )
+
         v_stack_small = v_stack.v_stack("v_stack_small", align_x="center", align_y="center", width=75)
+
         v_stack_small.md(ctx.panel.state.mean_msg)
 
         return types.Property(
