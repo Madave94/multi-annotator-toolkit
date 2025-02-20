@@ -716,6 +716,7 @@ class IAAPanel(foo.Panel):
         )
 
     def on_load(self, ctx):
+        # load initial values
         iaa_list = ctx.dataset.info["iaa_analyzed"]
 
         iaa_dict = defaultdict(list)
@@ -723,27 +724,44 @@ class IAAPanel(foo.Panel):
             ann_type, iou = iaa.split("-")
             iaa_dict[ann_type].append(iou)
 
+        # set default values
         ctx.panel.state.iaa_dict = iaa_dict
         if ctx.panel.state.ann_type_selection is None:
             ctx.panel.state.ann_type_selection = list(iaa_dict.keys())[0]
         if ctx.panel.state.iou_selection is None:
             ctx.panel.state.iou_selection = iaa_dict[ctx.panel.state.ann_type_selection][0]
 
-        values = self.get_values(ctx)
+        self.apply(ctx)
+
+        ctx.ops.split_panel("iaa_panel", layout="horizontal")
+
+    def apply(self, ctx):
+        # store values
+        ann_type_selection = ctx.panel.state.ann_type_selection
+        iou_selection = ctx.panel.state.iou_selection
+        iaa_dict = ctx.panel.state.iaa_dict
+
+        # clean values
+        ctx.ops.clear_panel_state()
+
+        # initialize default min/max values
+        ctx.panel.state.max_value = 1.0
+        ctx.panel.state.min_value = -1.0
+
+        # set states
+        ctx.panel.state.ann_type_selection = ann_type_selection
+        ctx.panel.state.iou_selection = iou_selection
+        ctx.panel.state.iaa_dict = iaa_dict
+        ctx.panel.state.mean_msg = "Waiting for calculation ..."
+
+        # run computation and plotting
         ctx.panel.state.plot_title = "Inter-Annotat-Agreement: {} {}".format(
             ctx.panel.state.ann_type_selection,
             ctx.panel.state.iou_selection)
-        ctx.panel.data.histogram = {"x": values,
-                                    "type": "histogram",
-                                    "marker": {"color": "#FF6D05"}, # gray #808080
-                                    "xbins": {"end": 1.0, "size": 0.1},
-                                    }
+        self.select_values(ctx)
+        self.set_histogram_values(ctx)
 
-        ctx.panel.state.mean_msg = "Mean for {} annotations wih iou-threshold {}: **{:.3f}**".format(ctx.panel.state.ann_type_selection,
-                                                                                                 ctx.panel.state.iou_selection,
-                                                                                                 (sum(values) / len(values)))
-
-        ctx.ops.split_panel("iaa_panel", layout="horizontal")
+        ctx.ops.clear_view()
 
     def change_ann_type(self, ctx):
         ctx.panel.state.ann_type_selection = ctx.params["value"]
@@ -751,13 +769,40 @@ class IAAPanel(foo.Panel):
     def change_iou_value(self, ctx):
         ctx.panel.state.iou_selection = ctx.params["value"]
 
-    def get_values(self, ctx):
-        values = []
+    def select_values(self, ctx):
+        selected_values = []
+        unselected_values = []
         for sample in ctx.dataset:
-            values.append(
-                sample["iaa"][ctx.panel.state.ann_type_selection + "-" + ctx.panel.state.iou_selection]
-            )
-        return values
+            value = (sample["iaa"][ctx.panel.state.ann_type_selection + "-" + ctx.panel.state.iou_selection])
+            if value <= ctx.panel.state.max_value and value >= ctx.panel.state.min_value:
+                selected_values.append(value)
+            else:
+                unselected_values.append(value)
+        ctx.panel.state.selected_values = selected_values
+        ctx.panel.state.unselected_values = unselected_values
+
+    def set_histogram_values(self, ctx):
+        # Reset the histogram before setting new data
+        ctx.panel.state.mean_msg = "Mean IAA for {} samples using {} annotations wih iou-threshold {}: **{:.3f}**".format(
+            len(ctx.panel.state.selected_values),
+            ctx.panel.state.ann_type_selection,
+            ctx.panel.state.iou_selection,
+            sum(ctx.panel.state.selected_values) / len(ctx.panel.state.selected_values)
+        )
+        ctx.ops.clear_panel_data()
+        ctx.panel.set_data("v_stack.histogram",  [{"name": "Selected Values",
+                                    "x": ctx.panel.state.selected_values,
+                                    "type": "histogram",
+                                    "marker": {"color": "#FF6D05"}, # gray #808080
+                                    "xbins": {"start": -1.0, "end": 1.0001, "size": 0.1},
+                                    },
+                                    {"name": "other Values",
+                                    "x": ctx.panel.state.unselected_values,
+                                    "type": "histogram",
+                                    "marker": {"color": "#808080"},  # gray #808080
+                                    "xbins": {"start": -1.0, "end": 1.0001, "size": 0.1},
+                                   }]
+                           )
 
     def on_histogram_click(self, ctx):
         bin_range = ctx.params.get("range")
@@ -768,6 +813,11 @@ class IAAPanel(foo.Panel):
         iou_value = ctx.panel.state.iou_selection
         field_name = "iaa.{}-{}".format(ann_type, iou_value)
 
+        ctx.panel.state.min_value = min_value
+        ctx.panel.state.max_value = max_value
+        self.select_values(ctx)
+        self.set_histogram_values(ctx)
+
         view = ctx.dataset.match((F(field_name) >= min_value) & (F(field_name) <= max_value))
 
         if view is not None:
@@ -775,8 +825,9 @@ class IAAPanel(foo.Panel):
 
     def render(self, ctx):
         panel = types.Object()
+        v_stack = panel.v_stack("v_stack", align_x="center", align_y="center", width=100, gap=10)
 
-        h_stack = panel.h_stack("h_stack", align_x="center", align_y="center", gap=5)
+        h_stack = v_stack.h_stack("h_stack", align_x="center", align_y="center", gap=5)
 
         dropdown_ann_type = types.DropdownView()
         for ann_type in ctx.panel.state.iaa_dict.keys():
@@ -802,27 +853,49 @@ class IAAPanel(foo.Panel):
 
         h_stack.btn(
             "load",
-            label="load with set values",
-            on_click=self.on_load
+            label="load/reset",
+            on_click=self.apply
         )
 
-        panel.plot(
+
+        v_stack.plot(
             "histogram",
             layout={
                 "title": {
                     "text": ctx.panel.state.plot_title,
                     "automargin": True,
                 },
-                "xaxis": {"title": "K-Alpha", },
+                "xaxis": {"title": "K-Alpha"},
                 "yaxis": {"title": "Count"},
                 "bargap": 0.05,
+                "autosize": True,  # Enable autosizing for responsive behavior
+                "responsive": True,
+                "dragmode": "select",
+                "selectdirection": "h",
+                "showlegend": True,
+                "legend": {
+                    "x": 0.5,
+                    "y": -0.2,
+                    "xanchor": "center",
+                    "orientation": "h",
+                    "bgcolor": "rgba(0, 0, 0, 0)",  # Transparent background for the legend
+                },
+                "barmode": "overlay",  # Overlay the two histograms
+                "plot_bgcolor": "rgba(0, 0, 0, 0)",  # Transparent background for the plotting area
+                "paper_bgcolor": "rgba(0, 0, 0, 0)",  # Transparent background for the entire layout
+                "colorway": ["grey", "#FF6D04", "blue"],
+            },
+            config={
+                "scrollZoom": False,
+                "displayModeBar": False,
+                "responsive": True,
             },
             on_click=self.on_histogram_click,
-
+            height=75,
         )
 
-        v_stack = panel.v_stack("v_stack", align_x="center", align_y="center", width=75)
-        v_stack.md(ctx.panel.state.mean_msg)
+        v_stack_small = v_stack.v_stack("v_stack_small", align_x="center", align_y="center", width=75)
+        v_stack_small.md(ctx.panel.state.mean_msg)
 
         return types.Property(
             panel,
@@ -1565,8 +1638,16 @@ class ConvergenceThresholdPanel(foo.Panel):
                         "box": {"visible": True},
                     })
 
+        visualization_states = ctx.panel.state.visualization_states
+
+        ctx.ops.clear_panel_data()
+        ctx.ops.clear_panel_state()
+
         # Update panel state with the new traces
         ctx.panel.state.plot_title = "Convergence Threshold for at: " + str(title_names)
+        ctx.panel.state.table = table
+        ctx.panel.state.compute_mean = compute_mean
+        ctx.panel.state.visualization_states = visualization_states
         ctx.panel.data.violin = traces
 
 class RunErrorAnalysis(foo.Operator):
