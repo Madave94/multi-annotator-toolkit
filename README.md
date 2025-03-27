@@ -2,7 +2,7 @@
 
 # Multi Annotator Toolkit
 
-This is a plugin for the FiftyOne framework that allows analysis of multi-annotated data. It is associated with our WACV publication [1](#1) looking into Label Convergence in Object Recognition as well as analysis of annotation errors/variations.
+This is a plugin for the [FiftyOne framework](https://github.com/voxel51/fiftyone) that allows analysis of multi-annotated data. It is associated with our WACV publication [1](#1) looking into Label Convergence in Object Recognition as well as analysis of annotation errors/variations.
 
 <p align="center">
   <img src="assets/teaser_noise.png" alt="Noisy Labels" width="300">
@@ -12,12 +12,22 @@ This is a plugin for the FiftyOne framework that allows analysis of multi-annota
   <em>Example of noisy annotation on a concrete structure, annotated by multiple civil engineers. Different colors indicate different annotators.</em>
 </p>
 
-## Important Note
+## Contents
+
+- [Disclaimer](#disclaimer)
+- [What can be done with this plugin](#what-can-be-done-with-this-plugin)
+- [Examples](#examples)
+- [Installation](#installation)
+- [Hello World](#multi-annotator-toolkit-hello-world-using-lvis)
+- [Add own dataset](#adding-your-own-dataset)
+- [Reference](#reference)
+
+## Disclaimer
 
 **The plugin is still under development, at this point only the basic feature are working and have not been tested on 
 any additional datasets besides LVIS.**
 
-## Overview
+## What can be done with this plugin
 
 ![](assets/plugin-overview.png)
 
@@ -62,7 +72,7 @@ fiftyone plugins requirements @madave94/multi_annotator_toolkit --install
 
 3. Unpack LVIS images and put them together in a folder with the annotations.
 
-5. Copy this example into a python script, **change the data_root variable** and run it:
+5. Copy this example into a jupyter-notebook, **change the data_root variable** and run it:
 
 ```
 import fiftyone as fo
@@ -108,7 +118,9 @@ session = fo.launch_app(dataset, auto=False)
 Ensure to change the path to the downloaded and unpacked folder. This example will load the multi-annotated and run a
 inter-annotator-agreement calculation.
 
+## Adding your own Dataset
 
+Coming soon.. for now please request the description from [David Tschirschwitz via e-mail](mailto:david.tschirschwitz@uni-weimar.de).
 
 ## Reference
 

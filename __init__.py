@@ -2539,6 +2539,7 @@ class ErrorAnalysisPanel(foo.Panel):
         ctx.ops.split_panel("error_analysis_panel", layout="horizontal")
 
     def on_histogram_click(self, ctx):
+        ctx.ops.notify(str(ctx.params))
         name_mapping = {
             "Correct Instance": "bb",
             "Missing/Overlooked Instance": "mi",
