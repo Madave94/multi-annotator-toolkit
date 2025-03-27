@@ -2638,31 +2638,46 @@ def check_available_annotation_types(ctx):
 
         # Check for bounding boxes
         for rater_id in raters_by_image:
-            detections = sample.get_field(f"detections_{rater_id}")
-            if detections is not None:
-                available_types.append("bounding box")
-                break
+            try:
+                detections = sample.get_field(f"detections_{rater_id}")
+                if detections is not None:
+                    available_types.append("bounding box")
+                    break
+            except AttributeError:
+                continue
 
         # Check for segmentations (masks and polygons)
         found_segmentation = False
         for rater_id in raters_by_image:
-            segmentations = sample.get_field(f"segmentations_{rater_id}")
-            if segmentations is not None:
-                if hasattr(segmentations, "detections"):
-                    for detection in segmentations.detections:
-                        if "bounding_box" in detection:
-                            available_types.append("mask")
+            try:
+                segmentations = sample.get_field(f"segmentations_{rater_id}")
+                if segmentations is not None:
+                    if hasattr(segmentations, "detections"):
+                        for detection in segmentations.detections:
+                            if "bounding_box" in detection:
+                                available_types.append("mask")
+                                found_segmentation = True
+                                break
+                        if found_segmentation:
+                            break
+                    if hasattr(segmentations, "polylines"):
+                        for polyline in segmentations.polylines:
+                            available_types.append("polygon")
                             found_segmentation = True
                             break
-                    if found_segmentation:
-                        break
-                if hasattr(segmentations, "polylines"):
-                    for polyline in segmentations.polylines:
-                        available_types.append("polygon")
-                        found_segmentation = True
-                        break
-                    if found_segmentation:
-                        break
+                        if found_segmentation:
+                            break
+            except AttributeError:
+                continue
+
+        if available_types == []:
+            inputs = types.Object()
+            prop = inputs.view("message", types.Error(
+                label="No bounding boxes and segmentations found."),
+                description="Please make sure your data contains bounding boxes and/or segmentations.",
+            )
+            prop.invalid = True
+            return types.Property(inputs)
         ctx.params["available_types"] = available_types
     return available_types
 
