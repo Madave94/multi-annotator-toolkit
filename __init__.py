@@ -3,6 +3,7 @@ import json
 from collections import defaultdict
 from itertools import combinations
 import random
+import logging
 from copy import deepcopy
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 
@@ -85,10 +86,12 @@ class LoadMultiAnnotatedData(foo.Operator):
             labels_path=labels_path,
             name="your_dataset_name",
             extra_attrs=True,  # Important to include extra fields like 'rater_id' and 'rater_list'
+            use_polylines = True/False, # select True or False depending on what you want to use, polylines are usually better
+            label_types=["detections", "segmentations"], # in case you use an object detection dataset use only "detections"
         )
         ```
 
-        **2. Use the Operator via the SDK:**
+        **2. Use the Operator via the SDK (jupyter-notebook example):**
 
         ```python
         import fiftyone.operators as foo
@@ -296,31 +299,73 @@ class LoadMultiAnnotatedData(foo.Operator):
 
         # Check which annotation fields exist
         field_schema = dataset.get_field_schema()
-        messages = [
-                f"Successfully loaded multi-annotations for {num_updated} out of {len(dataset)} samples.\n    "
-            ]
+        messages = []
+        loading_success = False
+
+        #
+        #  This should include 3 cases
+        #  1) detections and segmentations are available
+        #  2) only detections are loaded
+        #  3) only segmentations are loaded
+        #
+        #  -> for the segmentations there is a difference between loading polylines or masks
+        #
+        # The approach is to check if case 2 or 3 exist which means the field is stored into ground_truth instead of
+        # segmentations or detections. We find out the type and map it to the correct type. At this point the regular
+        # process is followed.
+
+        # check for ground_truth type and rename it
+        if "ground_truth" in field_schema:
+            for sample in dataset:
+                gt = sample["ground_truth"]
+                if gt == None:
+                    continue
+                else:
+                    if hasattr(gt, "detections"):
+                        if "mask" in gt.detections[0]:
+                            dataset.rename_sample_field("ground_truth", "segmentations")
+                            print("Rename ground_truth to segmentations..")
+                        else:
+                            dataset.rename_sample_field("ground_truth", "detections")
+                            print("Rename ground_truth to detections..")
+                    elif hasattr(gt, "polylines"):
+                        dataset.rename_sample_field("ground_truth", "segmentations")
+                        print("Rename ground_truth to segmentations..")
+                    else:
+                        raise Exception("Could not identify annotation type.")
+                field_schema = dataset.get_field_schema()
+                break
+
+        ann_types = []
 
         if 'detections' in field_schema:
+            ann_types.append("bounding box")
             detection_counts = split_annotations_by_rater(dataset, 'detections')
             messages.append(
                 f"Detections - Total: {detection_counts['total_annotations']},    \n"
                 f"Moved: {detection_counts['annotations_moved']},    \n"
                 f"Unassigned: {detection_counts['annotations_unassigned']}.    \n"
             )
-        else:
-            print("No 'detections' field found in the dataset.")
+            loading_success = True
 
         if 'segmentations' in field_schema:
+            ann_types.append(return_segmentation_type(dataset))
             segmentation_counts = split_annotations_by_rater(dataset, 'segmentations')
             messages.append(
                 f"Segmentations - Total: {segmentation_counts['total_annotations']},    \n"
                 f"Moved: {segmentation_counts['annotations_moved']},    \n"
                 f"Unassigned: {segmentation_counts['annotations_unassigned']}.    \n"
             )
-        else:
-            print("No 'segmentations' field found in the dataset.")
+            loading_success = True
+
+        dataset.info["ann_types"] = ann_types
+        dataset.save()
 
         # **Join the messages into a single string**
+        if loading_success:
+            messages = [f"Successfully loaded multi-annotations for {num_updated} out of {len(dataset)} samples.\n    "] + messages
+        else:
+            messages = ["Loading unsuccessful.\n    "]
         message_str = "\n".join(messages)
 
         print(message_str)
@@ -445,6 +490,19 @@ def split_annotations_by_rater(dataset, source_field, field_prefix=None):
         'samples_processed': samples_processed
     }
 
+def return_segmentation_type(dataset):
+    for sample in dataset:
+        annotations = sample.get_field("segmentations")
+        if annotations is None:
+            continue
+        # Determine the attribute to access based on field type
+        if isinstance(annotations, fo.Detections):
+            return "mask"
+        elif isinstance(annotations, fo.Polylines):
+            return "polygon"
+        else:
+            raise Exception("Invalid annotations type processed. Should be detections or polylines.")
+
 class CalculateIaa(foo.Operator):
     @property
     def config(self):
@@ -473,19 +531,20 @@ class CalculateIaa(foo.Operator):
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
+        # Check available annotation types (bbox, polygon, mask)
+        available_types = check_available_annotation_types(ctx)
         # --- for SDK call ---
         api_call = ctx.params.get("api_call", False)
         if api_call:
             # Parameters are already provided; no need to resolve input
+            assert ctx.params.get("annotation_type") in available_types, \
+                "Annotation type {} not in {}.".format(ctx.params.get("annotation_type"), available_types)
             return None
         # --- for SDK call ---
 
         inputs = types.Object()
 
         inputs.md("###### Options for calculating inter annotator agreement", name="mk1")
-
-        # Check available annotation types (bbox, polygon, mask)
-        available_types = check_available_annotation_types(ctx)
 
         # Create checkboxes for available annotation types
         annotation_types_radio_group = types.RadioGroup()
@@ -615,6 +674,8 @@ class CalculateIaa(foo.Operator):
                 else:
                     continue
 
+                if not sample.has_field(ann_field):
+                    continue
                 annotations = sample.get_field(ann_field)
                 if annotations is None:
                     continue
@@ -697,6 +758,7 @@ class CalculateIaa(foo.Operator):
             "message",
             types.Notice(label=ctx.results.get("message", "")),
         )
+        print(ctx.results.get("message", ""))
 
         return types.Property(outputs)
 
@@ -825,8 +887,6 @@ class IAAPanel(foo.Panel):
             ctx.ops.set_view(view=view)
 
     def slider_change(self,ctx):
-        #ctx.ops.notify(str(ctx.params))
-        #ctx.ops.notify(str(ctx.panel.state))
         bin_range = ctx.params.get("value")
         min_value = bin_range[0]
         max_value = bin_range[1]
@@ -974,21 +1034,21 @@ class CalculatemmAP(foo.Operator):
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
+        # Check available annotation types (bbox, polygon, mask)
+        available_types = check_available_annotation_types(ctx)
         # --- for SDK call ---
         api_call = ctx.params.get("api_call", False)
         if api_call:
             # Parameters are already provided; no need to resolve input
+            assert ctx.params.get("annotation_type") in available_types, \
+                "Annotation type {} not in {}.".format(ctx.params.get("annotation_type"), available_types)
             return None
         # --- for SDK call ---
-
         inputs = types.Object()
 
         inputs.md("###### Options for calculating modified mean Average Precision", name="mk1")
 
         dataset = ctx.dataset
-
-        # Check available annotation types (bbox, polygon, mask)
-        available_types = check_available_annotation_types(ctx)
 
         # Create checkboxes for available annotation types
         annotation_types_radio_group = types.RadioGroup()
@@ -1094,6 +1154,12 @@ class CalculatemmAP(foo.Operator):
         annotation_id = 0
         for image_idx, sample in enumerate(tqdm(dataset, desc="Pre-Processing samples")):
             raters_by_image = sample.get_field("rater_list")
+            if len(raters_by_image) > 2:
+                message = "Error: For cases of 3 or more annotator the implementation on mmAP does not work.    \n" \
+                          "Operation cancelled.    \n"
+                print(message)
+                return {"message": message}
+
             height, width = sample.metadata.height, sample.metadata.width
             filename = sample.filename
             annotations_dict["images"].append({
@@ -1190,7 +1256,7 @@ class CalculatemmAP(foo.Operator):
         message = "Modified Mean Average Precision (mmAP) for:    \n"
         for iou_threshold in iou_thresholds:
             if dataset_scope_choice == "Full":
-                mmap = mmaps[f"{ann_type}_{iou_threshold}"]
+                mmap = mmaps[f"{ann_type}_{iou_threshold}_None_all_0"]
             elif dataset_scope_choice == "Partial":
                 list_mmap = []
                 for idx in range(sampling_k):
@@ -1707,19 +1773,20 @@ class RunErrorAnalysis(foo.Operator):
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
+        # Check available annotation types (bbox, polygon, mask)
+        available_types = check_available_annotation_types(ctx)
         # --- for SDK call ---
         api_call = ctx.params.get("api_call", False)
         if api_call:
             # Parameters are already provided; no need to resolve input
+            assert ctx.params.get("annotation_type") in available_types, \
+                "Annotation type {} not in {}.".format(ctx.params.get("annotation_type"), available_types)
             return None
         # --- for SDK call ---
 
         inputs = types.Object()
 
         inputs.md("###### Options for running error analysis", name="mk1")
-
-        # Check available annotation types (bbox, polygon, mask)
-        available_types = check_available_annotation_types(ctx)
 
         # Create checkboxes for available annotation types
         annotation_types_radio_group = types.RadioGroup()
@@ -2620,49 +2687,9 @@ class ErrorAnalysisPanel(foo.Panel):
 
 def check_available_annotation_types(ctx):
     available_types = ctx.params.get("available_types", [])
-    dataset = ctx.dataset
     if available_types == []:
-        sample = dataset.first()
-        # Check if rater list exists
-        if not sample.has_field("rater_list"):
-            inputs = types.Object()
-            prop = inputs.view("message", types.Error(
-                label="No multi-annotated data found."),
-                               description="Please run `Load Multi Annotated Data` first or check if your annotations file is properly"
-                                           " formatted.",
-                               )
-            prop.invalid = True
-            return types.Property(inputs)
-
-        raters_by_image = sample.get_field("rater_list")
-
-        # Check for bounding boxes
-        for rater_id in raters_by_image:
-            detections = sample.get_field(f"detections_{rater_id}")
-            if detections is not None:
-                available_types.append("bounding box")
-                break
-
-        # Check for segmentations (masks and polygons)
-        found_segmentation = False
-        for rater_id in raters_by_image:
-            segmentations = sample.get_field(f"segmentations_{rater_id}")
-            if segmentations is not None:
-                if hasattr(segmentations, "detections"):
-                    for detection in segmentations.detections:
-                        if "bounding_box" in detection:
-                            available_types.append("mask")
-                            found_segmentation = True
-                            break
-                    if found_segmentation:
-                        break
-                if hasattr(segmentations, "polylines"):
-                    for polyline in segmentations.polylines:
-                        available_types.append("polygon")
-                        found_segmentation = True
-                        break
-                    if found_segmentation:
-                        break
+        dataset = ctx.dataset
+        available_types = dataset.info["ann_types"]
         ctx.params["available_types"] = available_types
     return available_types
 

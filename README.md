@@ -72,7 +72,8 @@ fiftyone plugins requirements @madave94/multi_annotator_toolkit --install
 
 3. Unpack LVIS images and put them together in a folder with the annotations.
 
-5. Copy this example into a jupyter-notebook, **change the data_root variable** and run it:
+4. Copy this example into a jupyter-notebook, **change the data_root variable** and run it:
+5. In case you are running an object detection dataset (only bounding boxes) change label_types to ["detections"].
 
 ```
 import fiftyone as fo
@@ -90,7 +91,8 @@ dataset = fo.Dataset.from_dir(
     labels_path=labels_path,
     name = name,
     extra_attrs = True,
-    use_polylines =True
+    use_polylines =True,
+    label_types=["detections", "segmentations"] <---- maybe change this
 )
 
 # Loads the multi-annotated data
@@ -121,6 +123,9 @@ inter-annotator-agreement calculation.
 ## Adding your own Dataset
 
 Coming soon.. for now please request the description from [David Tschirschwitz via e-mail](mailto:david.tschirschwitz@uni-weimar.de).
+
+You can already add your own dataset with some technical knowledge and formatting your data correctly. Please follow the docstring
+description in `__init__.py` for the function `LoadMultiAnnotatedData`.
 
 ## Reference
 
