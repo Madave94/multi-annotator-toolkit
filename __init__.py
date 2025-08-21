@@ -2732,6 +2732,10 @@ def suppress_output():
         with redirect_stdout(devnull), redirect_stderr(devnull):
             yield
 
+def debug_helper(ctx, msg):
+    print(str(msg))
+    ctx.ops.notify(str(msg))
+
 def register(plugin):
     plugin.register(LoadMultiAnnotatedData)
     plugin.register(CalculateIaa)
