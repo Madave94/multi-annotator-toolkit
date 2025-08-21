@@ -2,6 +2,7 @@ import os
 import json
 from collections import defaultdict
 from itertools import combinations
+import traceback
 import random
 import logging
 from copy import deepcopy
@@ -245,136 +246,149 @@ class LoadMultiAnnotatedData(foo.Operator):
         return types.Property(inputs)
 
     def execute(self, ctx):
-        annos_path = ctx.params.get("annos_path")
-        if isinstance(annos_path, dict):
-            file_path = annos_path.get('absolute_path') or annos_path.get('path')
-        else:
-            file_path = annos_path
-
-        # Proceed with your logic using file_path
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-
-        # Create a mapping from base file names to rater_list
-        file_name_to_rater_list = {
-            os.path.basename(image["file_name"]): image["rater_list"] for image in data["images"]
-        }
-
-        # Access the dataset
-        dataset = ctx.dataset
-
-        # Ensure 'rater_list' field is defined as ListField of StringField
-        if 'rater_list' not in dataset.get_field_schema():
-            dataset.add_sample_field('rater_list', fo.ListField, subfield=fo.StringField)
-
-        # Create a mapping from sample IDs to rater_list
-        id_to_rater_list = {}
-
-        # Iterate over the samples
-        for sample in dataset:
-            # Extract the base file name from the sample's filepath
-            sample_file_name = os.path.basename(sample.filepath)
-
-            # Get the rater_list for this sample, if it exists
-            rater_list = file_name_to_rater_list.get(sample_file_name)
-
-            if rater_list is not None:
-                # Add the rater_list to the mapping
-                id_to_rater_list[sample.id] = rater_list
+        try:
+            annos_path = ctx.params.get("annos_path")
+            if isinstance(annos_path, dict):
+                file_path = annos_path.get('absolute_path') or annos_path.get('path')
             else:
-                # Handle the case where there's no matching rater_list
-                print(f"No rater_list found for {sample_file_name}")
+                file_path = annos_path
 
-        # Bulk update the rater_list field
-        if id_to_rater_list:
-            # Specify key_field="_id" to match sample IDs
-            dataset.set_values("rater_list", id_to_rater_list, key_field="_id")
-            num_updated = len(id_to_rater_list)
-        else:
-            num_updated = 0
+            # Proceed with your logic using file_path
+            with open(file_path, 'r') as f:
+                data = json.load(f)
 
-        # Create an index on 'rater_list' for faster queries
-        if "rater_list" not in dataset.list_indexes():
-            dataset.create_index("rater_list")
+            # Create a mapping from base file names to rater_list
+            file_name_to_rater_list = {
+                os.path.basename(image["file_name"]): image["rater_list"] for image in data["images"]
+            }
 
-        # Check which annotation fields exist
-        field_schema = dataset.get_field_schema()
-        messages = []
-        loading_success = False
+            # Access the dataset
+            dataset = ctx.dataset
 
-        #
-        #  This should include 3 cases
-        #  1) detections and segmentations are available
-        #  2) only detections are loaded
-        #  3) only segmentations are loaded
-        #
-        #  -> for the segmentations there is a difference between loading polylines or masks
-        #
-        # The approach is to check if case 2 or 3 exist which means the field is stored into ground_truth instead of
-        # segmentations or detections. We find out the type and map it to the correct type. At this point the regular
-        # process is followed.
+            # Ensure 'rater_list' field is defined as ListField of StringField
+            if 'rater_list' not in dataset.get_field_schema():
+                dataset.add_sample_field('rater_list', fo.ListField, subfield=fo.StringField)
 
-        # check for ground_truth type and rename it
-        if "ground_truth" in field_schema:
+            # Create a mapping from sample IDs to rater_list
+            id_to_rater_list = {}
+
+            # Iterate over the samples
             for sample in dataset:
-                gt = sample["ground_truth"]
-                if gt == None:
-                    continue
+                # Extract the base file name from the sample's filepath
+                sample_file_name = os.path.basename(sample.filepath)
+
+                # Get the rater_list for this sample, if it exists
+                rater_list = file_name_to_rater_list.get(sample_file_name)
+
+                if rater_list is not None:
+                    # Add the rater_list to the mapping
+                    id_to_rater_list[sample.id] = rater_list
                 else:
-                    if hasattr(gt, "detections"):
-                        if "mask" in gt.detections[0]:
+                    # Handle the case where there's no matching rater_list
+                    print(f"No rater_list found for {sample_file_name}")
+
+            # Bulk update the rater_list field
+            if id_to_rater_list:
+                # Specify key_field="_id" to match sample IDs
+                dataset.set_values("rater_list", id_to_rater_list, key_field="_id")
+                num_updated = len(id_to_rater_list)
+            else:
+                num_updated = 0
+
+            # Create an index on 'rater_list' for faster queries
+            if "rater_list" not in dataset.list_indexes():
+                dataset.create_index("rater_list")
+
+            # Check which annotation fields exist
+            field_schema = dataset.get_field_schema()
+            messages = []
+            loading_success = False
+
+            #
+            #  This should include 3 cases
+            #  1) detections and segmentations are available
+            #  2) only detections are loaded
+            #  3) only segmentations are loaded
+            #
+            #  -> for the segmentations there is a difference between loading polylines or masks
+            #
+            # The approach is to check if case 2 or 3 exist which means the field is stored into ground_truth instead of
+            # segmentations or detections. We find out the type and map it to the correct type. At this point the regular
+            # process is followed.
+
+            # check for ground_truth type and rename it
+            if "ground_truth" in field_schema:
+                for sample in dataset:
+                    gt = sample["ground_truth"]
+                    if gt == None:
+                        continue
+                    else:
+                        if hasattr(gt, "detections"):
+                            if "mask" in gt.detections[0]:
+                                dataset.rename_sample_field("ground_truth", "segmentations")
+                                print("Rename ground_truth to segmentations..")
+                            else:
+                                dataset.rename_sample_field("ground_truth", "detections")
+                                print("Rename ground_truth to detections..")
+                        elif hasattr(gt, "polylines"):
                             dataset.rename_sample_field("ground_truth", "segmentations")
                             print("Rename ground_truth to segmentations..")
                         else:
-                            dataset.rename_sample_field("ground_truth", "detections")
-                            print("Rename ground_truth to detections..")
-                    elif hasattr(gt, "polylines"):
-                        dataset.rename_sample_field("ground_truth", "segmentations")
-                        print("Rename ground_truth to segmentations..")
-                    else:
-                        raise Exception("Could not identify annotation type.")
-                field_schema = dataset.get_field_schema()
-                break
+                            raise Exception("Could not identify annotation type.")
+                    field_schema = dataset.get_field_schema()
+                    break
 
-        ann_types = []
+            ann_types = []
 
-        if 'detections' in field_schema:
-            ann_types.append("bounding box")
-            detection_counts = split_annotations_by_rater(dataset, 'detections')
-            messages.append(
-                f"Detections - Total: {detection_counts['total_annotations']},    \n"
-                f"Moved: {detection_counts['annotations_moved']},    \n"
-                f"Unassigned: {detection_counts['annotations_unassigned']}.    \n"
+            if 'detections' in field_schema:
+                ann_types.append("bounding box")
+                detection_counts = split_annotations_by_rater(dataset, 'detections', ctx=ctx)
+                messages.append(
+                    f"Detections - Total: {detection_counts['total_annotations']},    \n"
+                    f"Moved: {detection_counts['annotations_moved']},    \n"
+                    f"Unassigned: {detection_counts['annotations_unassigned']}.    \n"
+                )
+                loading_success = True
+
+            if 'segmentations' in field_schema:
+                ann_types.append(return_segmentation_type(dataset))
+                segmentation_counts = split_annotations_by_rater(dataset, 'segmentations')
+                messages.append(
+                    f"Segmentations - Total: {segmentation_counts['total_annotations']},    \n"
+                    f"Moved: {segmentation_counts['annotations_moved']},    \n"
+                    f"Unassigned: {segmentation_counts['annotations_unassigned']}.    \n"
+                )
+                loading_success = True
+
+            dataset.info["ann_types"] = ann_types
+            dataset.save()
+
+            # **Join the messages into a single string**
+            if loading_success:
+                messages = [f"Successfully loaded multi-annotations for {num_updated} out of {len(dataset)} samples.\n    "] + messages
+            else:
+                messages = ["Loading unsuccessful.\n    "]
+            message_str = "\n".join(messages)
+
+            print(message_str)
+
+            return {
+                "message": message_str,
+                "num_updated": num_updated,
+                "num_samples": len(dataset),
+            }
+        except Exception as e:
+            error_details = traceback.format_exc()
+            error_message = (
+                f"❌ Operator failed!\n\n"
+                f"Error Type: {type(e).__name__}\n"
+                f"Error Details: {e}\n\n"
+                f"Full Traceback:\n-----------------\n{error_details}"
             )
-            loading_success = True
 
-        if 'segmentations' in field_schema:
-            ann_types.append(return_segmentation_type(dataset))
-            segmentation_counts = split_annotations_by_rater(dataset, 'segmentations')
-            messages.append(
-                f"Segmentations - Total: {segmentation_counts['total_annotations']},    \n"
-                f"Moved: {segmentation_counts['annotations_moved']},    \n"
-                f"Unassigned: {segmentation_counts['annotations_unassigned']}.    \n"
-            )
-            loading_success = True
+            print(error_message)
 
-        dataset.info["ann_types"] = ann_types
-        dataset.save()
-
-        # **Join the messages into a single string**
-        if loading_success:
-            messages = [f"Successfully loaded multi-annotations for {num_updated} out of {len(dataset)} samples.\n    "] + messages
-        else:
-            messages = ["Loading unsuccessful.\n    "]
-        message_str = "\n".join(messages)
-
-        print(message_str)
-
-        return {
-            "message": message_str,
-            "num_updated": num_updated,
-            "num_samples": len(dataset),
-        }
+            return {"message": error_message}
 
     def resolve_output(self, ctx):
         outputs = types.Object()
@@ -389,7 +403,7 @@ class LoadMultiAnnotatedData(foo.Operator):
         return types.Property(outputs)
 
 # utility function to process annotations
-def split_annotations_by_rater(dataset, source_field, field_prefix=None):
+def split_annotations_by_rater(dataset, source_field, field_prefix=None, ctx=None):
     """
     Splits annotations in the source_field into per-rater fields based on 'rater_id'.
 
@@ -444,8 +458,8 @@ def split_annotations_by_rater(dataset, source_field, field_prefix=None):
         # Assign per-rater annotations to new fields
         for rater_id, ann_list in annotations_by_rater.items():
             field_name = f"{field_prefix}{rater_id}"
-            # Ensure field exists in dataset schema
-            if field_name not in field_schema:
+            # Ensure field exists in dataset schema -> executed only once for the entire dataset per field
+            if not dataset.has_sample_field(field_name):
                 dataset.add_sample_field(
                     field_name,
                     fo.EmbeddedDocumentField,
