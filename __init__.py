@@ -278,14 +278,15 @@ class LoadMultiAnnotatedData(foo.Operator):
                 sample_file_name = os.path.basename(sample.filepath)
 
                 # Get the rater_list for this sample, if it exists
-                rater_list = file_name_to_rater_list.get(sample_file_name)
-
-                if rater_list is not None:
-                    # Add the rater_list to the mapping
+                try:
+                    rater_list = file_name_to_rater_list[sample_file_name]
                     id_to_rater_list[sample.id] = rater_list
-                else:
-                    # Handle the case where there's no matching rater_list
-                    print(f"No rater_list found for {sample_file_name}")
+                except KeyError:
+                    raise ValueError(
+                        f"Data Inconsistency: The image file '{sample_file_name}' "
+                        f"does not contain the required 'rater_list' attribute."
+                        f"Ensure that the annotation file is correctly formatted."
+                    )
 
             # Bulk update the rater_list field
             if id_to_rater_list:
@@ -421,12 +422,14 @@ def split_annotations_by_rater(dataset, source_field, field_prefix=None, ctx=Non
     annotations_unassigned = 0
     samples_processed = 0
 
-    # Collect field type (fo.Detections or fo.Polylines, etc.)
-    field_schema = dataset.get_field_schema()
-
     # Process each sample
     for sample in tqdm(dataset, desc=f"Processing {source_field}"):
-        rater_list = sample.get_field("rater_list")
+        original_rater_list = sample.get_field("rater_list")
+        if not original_rater_list:
+            raise Exception(f"Missing 'rater_list' for {sample.filepath}.")
+        sanitized_rater_list = [_sanitize_for_field_name(r) for r in original_rater_list]
+        sample.rater_list = sanitized_rater_list
+
         annotations = sample.get_field(source_field)
         if annotations is None:
             continue
@@ -440,15 +443,20 @@ def split_annotations_by_rater(dataset, source_field, field_prefix=None, ctx=Non
             raise Exception("Invalid annotations type processed. Should be detections or polylines.")
 
         # Initialize per-rater annotations dict
-        annotations_by_rater = {rater_id: [] for rater_id in rater_list}
+        annotations_by_rater = {sanitized_id: [] for sanitized_id in sanitized_rater_list}
         unassigned_annotations = []
 
         # Process annotations
         for annotation in annotations_list:
+            original_rater_id = annotation.get_field('rater_id')
+            if not original_rater_id:
+                raise Exception(f"Missing 'rater_id' for {sample.filepath}.")
+            sanitized_rater_id = _sanitize_for_field_name(original_rater_id)
+            annotation.rater_id = sanitized_rater_id
+
             total_annotations += 1
-            rater_id = annotation.get_field('rater_id')
-            if rater_id and rater_id in rater_list:
-                annotations_by_rater[rater_id].append(annotation)
+            if sanitized_rater_id in annotations_by_rater:
+                annotations_by_rater[sanitized_rater_id].append(annotation)
                 annotations_moved += 1
             else:
                 unassigned_annotations.append(annotation)
@@ -457,7 +465,8 @@ def split_annotations_by_rater(dataset, source_field, field_prefix=None, ctx=Non
 
         # Assign per-rater annotations to new fields
         for rater_id, ann_list in annotations_by_rater.items():
-            field_name = f"{field_prefix}{rater_id}"
+            sanitized_rater_id = rater_id.replace('.', '_')
+            field_name = f"{field_prefix}{sanitized_rater_id}"
             # Ensure field exists in dataset schema -> executed only once for the entire dataset per field
             if not dataset.has_sample_field(field_name):
                 dataset.add_sample_field(
@@ -2749,6 +2758,12 @@ def suppress_output():
 def debug_helper(ctx, msg):
     print(str(msg))
     ctx.ops.notify(str(msg))
+
+def _sanitize_for_field_name(name: str) -> str:
+    """Replaces characters that are invalid for FiftyOne field names."""
+    if not isinstance(name, str):
+        name = str(name)
+    return name.replace('.', '_')
 
 def register(plugin):
     plugin.register(LoadMultiAnnotatedData)
