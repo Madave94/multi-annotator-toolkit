@@ -1934,16 +1934,19 @@ class RunErrorAnalysis(foo.Operator):
                 ann_field_a = f"detections_{rater_a}"
                 ann_field_b = f"detections_{rater_b}"
                 element_field = "detections"
+                loc_field = "bounding_box"
                 InstanceClass = fol.Detection
             elif ann_type == "mask":
                 ann_field_a = f"segmentations_{rater_a}"
                 ann_field_b = f"segmentations_{rater_b}"
                 element_field = "detections"
+                loc_field = "tags" # "mask"  -> This is a workaround and saves actually no localization data, since they are to large
                 InstanceClass = fol.Detection
             elif ann_type == "polygon":
                 ann_field_a = f"segmentations_{rater_a}"
                 ann_field_b = f"segmentations_{rater_b}"
                 element_field = "polylines"
+                loc_field = "tags" # "points" -> This is a workaround and saves actually no localization data, since they are to large
                 InstanceClass = fol.Polyline
             else:
                 raise Exception(f"Annotation type {ann_type} does not exist or is not implemented..")
@@ -1969,7 +1972,8 @@ class RunErrorAnalysis(foo.Operator):
                         matches[iou_threshold].append(
                             AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b, errors=["mi"],
                                             iou_threshold=iou_threshold, cls_a=None, cls_b=annotation.label, iou=None,
-                                            id_a=None, id_b=annotation.id, child_ids=None)
+                                            id_a=None, id_b=annotation.id, child_ids=None,
+                                            loc_a=None, loc_b=annotation.get_field(loc_field))
                         )
             # 3. handle case of rater_b has no annotations
             elif annotations_b == []:
@@ -1981,7 +1985,8 @@ class RunErrorAnalysis(foo.Operator):
                         matches[iou_threshold].append(
                             AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b, errors=["mi"],
                                             iou_threshold=iou_threshold, cls_a=annotation.label, cls_b=None, iou=None,
-                                            id_a=annotation.id, id_b=None, child_ids=None)
+                                            id_a=annotation.id, id_b=None, child_ids=None,
+                                            loc_a=annotation.get_field(loc_field), loc_b=None)
                         )
             # 4. handle normal case in which the matching is ran
             else:
@@ -2035,7 +2040,8 @@ class RunErrorAnalysis(foo.Operator):
                                         AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                         errors=["bb"],
                                                         iou_threshold=iou_threshold, cls_a=det_a.label, cls_b=det_b.label,
-                                                        iou=ious[row, col], id_a=det_a.id, id_b=det_b.id, child_ids=None)
+                                                        iou=ious[row, col], id_a=det_a.id, id_b=det_b.id, child_ids=None,
+                                                        loc_a=det_a.get_field(loc_field), loc_b=det_b.get_field(loc_field))
                                     )
                                     if det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID:
                                         det_a.set_field(id_key(iou_threshold, rater_b), det_b.id)
@@ -2099,7 +2105,8 @@ class RunErrorAnalysis(foo.Operator):
                                                         iou_threshold=iou_threshold, cls_a=det_a.label,
                                                         cls_b=det_b.label,
                                                         iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
-                                                        child_ids=det_a.merge_ids if "merged" in det_a.tags else det_b.merge_ids)
+                                                        child_ids=det_a.merge_ids if "merged" in det_a.tags else det_b.merge_ids,
+                                                        loc_a=det_a.get_field(loc_field), loc_b=det_b.get_field(loc_field))
                                     )
                                     if det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID:
                                         det_a.set_field(id_key(iou_threshold, rater_b), det_b.id)
@@ -2164,7 +2171,8 @@ class RunErrorAnalysis(foo.Operator):
                                                     iou_threshold=iou_threshold, cls_a=det_a.label,
                                                     cls_b=det_b.label,
                                                     iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
-                                                    child_ids=None)
+                                                    child_ids=None,
+                                                    loc_a=det_a.get_field(loc_field), loc_b=det_b.get_field(loc_field))
                                 )
                                 if det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID:
                                     det_a.set_field(id_key(iou_threshold, rater_b), det_b.id)
@@ -2230,7 +2238,8 @@ class RunErrorAnalysis(foo.Operator):
                                                     iou_threshold=iou_threshold, cls_a=det_a.label,
                                                     cls_b=det_b.label,
                                                     iou=ious[row, col], id_a=det_a.id, id_b=det_b.id,
-                                                    child_ids=det_a.merge_ids if "merged" in det_a.tags else det_b.merge_ids)
+                                                    child_ids=det_a.merge_ids if "merged" in det_a.tags else det_b.merge_ids,
+                                                    loc_a=det_a.get_field(loc_field), loc_b=det_b.get_field(loc_field))
                                 )
                                 if det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID:
                                     det_a.set_field(id_key(iou_threshold, rater_b), det_b.id)
@@ -2281,7 +2290,8 @@ class RunErrorAnalysis(foo.Operator):
                                                     errors=["mi"],
                                                     iou_threshold=iou_threshold, cls_a=det_a.label, cls_b=None,
                                                     iou=None,
-                                                    id_a=det_a.id, id_b=None, child_ids=None)
+                                                    id_a=det_a.id, id_b=None, child_ids=None,
+                                                    loc_a=det_a.get_field(loc_field), loc_b=None)
                                 )
                                 det_a.set_field(ae_key(iou_threshold, rater_b), "mi")
                         for det_b in matchable_detections_b:
@@ -2294,7 +2304,8 @@ class RunErrorAnalysis(foo.Operator):
                                                     errors=["mi"],
                                                     iou_threshold=iou_threshold, cls_a=None, cls_b=det_b.label,
                                                     iou=None,
-                                                    id_a=None, id_b=det_b.id, child_ids=None)
+                                                    id_a=None, id_b=det_b.id, child_ids=None,
+                                                    loc_a=None, loc_b=det_b.get_field(loc_field))
                                 )
                                 det_b.set_field(ae_key(iou_threshold, rater_a), "mi")
 
@@ -2302,8 +2313,8 @@ class RunErrorAnalysis(foo.Operator):
         return matches
 
 class AnnotationError():
-    def __init__(self, sample_id: str, rater_a: str, rater_b: str, errors: list, iou_threshold,
-                 cls_a=None, cls_b=None, iou=None, id_a=None, id_b=None, child_ids=None):
+    def __init__(self, sample_id: str, rater_a: str, rater_b: str, errors: list, iou_threshold, cls_a=None, cls_b=None,
+                 iou=None, id_a=None, id_b=None, child_ids=None, loc_a: list = None, loc_b: list = None):
         self.sample_id = sample_id
         self.rater_a = rater_a
         self.rater_b = rater_b
@@ -2315,6 +2326,8 @@ class AnnotationError():
         self.id_a = id_a
         self.id_b = id_b
         self.child_ids = child_ids
+        self.loc_a = loc_a
+        self.loc_b = loc_b
 
     def to_dict(self):
         return {
@@ -2329,6 +2342,8 @@ class AnnotationError():
             'id_a': self.id_a,
             'id_b': self.id_b,
             'child_ids': self.child_ids,
+            'loc_a': self.loc_a,
+            'loc_b': self.loc_b
         }
 
     @classmethod
