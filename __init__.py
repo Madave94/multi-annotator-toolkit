@@ -1792,9 +1792,9 @@ class RunErrorAnalysis(foo.Operator):
             dark_icon="/assets/icon-dark.svg",
         )
 
-    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False):
+    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False, recalculate=True):
         ctx = dict(view=sample_collection.view())
-        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate, api_call=True)
+        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate, api_call=True, recalculate=recalculate)
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
@@ -1848,14 +1848,33 @@ class RunErrorAnalysis(foo.Operator):
             # get arguments
             ann_type = ctx.params.get("annotation_type")
             iou_thresholds = ctx.params.get("iou_thresholds")
+            recalculate = ctx.params.get("recalculate")
+
+            dataset.add_sample_field(
+                "annotation_errors",
+                fo.DictField,
+                embedded_doc_type=fo.ListField
+            )
 
             all_matches = defaultdict(list)
 
             samples_not_able_to_process = 0
             for sample in tqdm(dataset, desc=f"Calculating {ann_type} annotation errors"):
-                matches = self.analyse_sample(ctx, sample, ann_type, iou_thresholds)
+                # check missing calculations for the case of recalculation=False
+                calc_iou_thresholds = []
                 for iou_threshold in iou_thresholds:
-                    all_matches[str(ann_type) + "@" + str(iou_threshold)] += matches[iou_threshold]
+                    if recalculate or str(ann_type) + "@" + str(iou_threshold) not in sample.get_field("annotation_errors"):
+                        calc_iou_thresholds.append(iou_threshold)
+                matches = self.analyse_sample(ctx, sample, ann_type, calc_iou_thresholds)
+                for iou_threshold in calc_iou_thresholds:
+                    all_matches[str(ann_type) + "@" + str(iou_threshold)] += matches[str(ann_type) + "@" + str(iou_threshold)]
+                serialized_matches: dict = sample.get_field("annotation_errors")
+                if serialized_matches is not None:
+                    serialized_matches.update(serialize_all_matches(matches))
+                else:
+                    serialized_matches = serialize_all_matches(matches)
+                sample.set_field("annotation_errors", serialized_matches)
+                sample.save()
 
             message = f"Error Analysis Results on {ann_type}:    \n"
             error_counter = defaultdict(int)
@@ -1871,14 +1890,6 @@ class RunErrorAnalysis(foo.Operator):
                 message += f"Issue with {samples_not_able_to_process} samples. They have not been processed and are excluded from " \
                            f"the annotation error calculation. If you are using masks, try switching to polygons."
 
-            # serialize nested structures
-            annotation_errors = dataset.info.get("annotation_errors", {})
-            if annotation_errors != {}:
-                annotation_errors = json.loads(annotation_errors)
-            annotation_errors.update(
-                serialize_all_matches(all_matches)
-            )
-            dataset.info["annotation_errors"] = json.dumps(annotation_errors)
             dataset.save()
 
             print(message)
@@ -1940,13 +1951,13 @@ class RunErrorAnalysis(foo.Operator):
                 ann_field_a = f"segmentations_{rater_a}"
                 ann_field_b = f"segmentations_{rater_b}"
                 element_field = "detections"
-                loc_field = "tags" # "mask"  -> This is a workaround and saves actually no localization data, since they are to large
+                loc_field = "mask"
                 InstanceClass = fol.Detection
             elif ann_type == "polygon":
                 ann_field_a = f"segmentations_{rater_a}"
                 ann_field_b = f"segmentations_{rater_b}"
                 element_field = "polylines"
-                loc_field = "tags" # "points" -> This is a workaround and saves actually no localization data, since they are to large
+                loc_field = "points"
                 InstanceClass = fol.Polyline
             else:
                 raise Exception(f"Annotation type {ann_type} does not exist or is not implemented..")
@@ -1969,7 +1980,7 @@ class RunErrorAnalysis(foo.Operator):
                         annotation.set_field(ae_key(iou_threshold, rater_a), "mi")
                         annotation.set_field(iou_key(iou_threshold, rater_a), _NO_MATCH_IOU)
                         annotation.set_field(id_key(iou_threshold, rater_a), _NO_MATCH_ID)
-                        matches[iou_threshold].append(
+                        matches[str(ann_type) + "@" + str(iou_threshold)].append(
                             AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b, errors=["mi"],
                                             iou_threshold=iou_threshold, cls_a=None, cls_b=annotation.label, iou=None,
                                             id_a=None, id_b=annotation.id, child_ids=None,
@@ -1982,7 +1993,7 @@ class RunErrorAnalysis(foo.Operator):
                         annotation.set_field(ae_key(iou_threshold, rater_b), "mi")
                         annotation.set_field(iou_key(iou_threshold, rater_b), _NO_MATCH_IOU)
                         annotation.set_field(id_key(iou_threshold, rater_b), _NO_MATCH_ID)
-                        matches[iou_threshold].append(
+                        matches[str(ann_type) + "@" + str(iou_threshold)].append(
                             AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b, errors=["mi"],
                                             iou_threshold=iou_threshold, cls_a=annotation.label, cls_b=None, iou=None,
                                             id_a=annotation.id, id_b=None, child_ids=None,
@@ -2036,7 +2047,7 @@ class RunErrorAnalysis(foo.Operator):
                                 if (det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID or iscrowd(det_a)) or \
                                     (det_b.get_field(id_key(iou_threshold, rater_a)) == _NO_MATCH_ID or iscrowd(det_b)):
                                     # if this is true this means that each of the detections is either not matched or a crowed
-                                    matches[iou_threshold].append(
+                                    matches[str(ann_type) + "@" + str(iou_threshold)].append(
                                         AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                         errors=["bb"],
                                                         iou_threshold=iou_threshold, cls_a=det_a.label, cls_b=det_b.label,
@@ -2099,7 +2110,7 @@ class RunErrorAnalysis(foo.Operator):
                                 if (det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID or iscrowd(det_a)) or \
                                         (det_b.get_field(id_key(iou_threshold, rater_a)) == _NO_MATCH_ID or iscrowd(det_b)):
                                     # if this is true this means that each of the detections is either not matched or a crowed
-                                    matches[iou_threshold].append(
+                                    matches[str(ann_type) + "@" + str(iou_threshold)].append(
                                         AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                         errors=["mu"],
                                                         iou_threshold=iou_threshold, cls_a=det_a.label,
@@ -2165,7 +2176,7 @@ class RunErrorAnalysis(foo.Operator):
                             # check regular conditions
                             if (det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID or iscrowd(det_a)) or \
                                     (det_b.get_field(id_key(iou_threshold, rater_a)) == _NO_MATCH_ID or iscrowd(det_b)):
-                                matches[iou_threshold].append(
+                                matches[str(ann_type) + "@" + str(iou_threshold)].append(
                                     AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                     errors=["wc"],
                                                     iou_threshold=iou_threshold, cls_a=det_a.label,
@@ -2232,7 +2243,7 @@ class RunErrorAnalysis(foo.Operator):
                             if (det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID or iscrowd(det_a)) or \
                                     (det_b.get_field(id_key(iou_threshold, rater_a)) == _NO_MATCH_ID or iscrowd(det_b)):
                                 # if this is true this means that each of the detections is either not matched or a crowed
-                                matches[iou_threshold].append(
+                                matches[str(ann_type) + "@" + str(iou_threshold)].append(
                                     AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                     errors=["mu", "wc"],
                                                     iou_threshold=iou_threshold, cls_a=det_a.label,
@@ -2285,7 +2296,7 @@ class RunErrorAnalysis(foo.Operator):
                             if "merged" in det_a.tags:
                                 continue
                             if det_a.get_field(id_key(iou_threshold, rater_b)) == _NO_MATCH_ID:
-                                matches[iou_threshold].append(
+                                matches[str(ann_type) + "@" + str(iou_threshold)].append(
                                     AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                     errors=["mi"],
                                                     iou_threshold=iou_threshold, cls_a=det_a.label, cls_b=None,
@@ -2299,7 +2310,7 @@ class RunErrorAnalysis(foo.Operator):
                             if "merged" in det_b.tags:
                                 continue
                             if det_b.get_field(id_key(iou_threshold, rater_a)) == _NO_MATCH_ID:
-                                matches[iou_threshold].append(
+                                matches[str(ann_type) + "@" + str(iou_threshold)].append(
                                     AnnotationError(sample_id=sample.id, rater_a=rater_a, rater_b=rater_b,
                                                     errors=["mi"],
                                                     iou_threshold=iou_threshold, cls_a=None, cls_b=det_b.label,
@@ -2605,9 +2616,11 @@ class ErrorAnalysisPanel(foo.Panel):
             "mu": "#B77542"
         }
         dataset = ctx.dataset
-        annotation_errors = dataset.info.get("annotation_errors", {})
-        if annotation_errors != {}:
-            annotation_errors = json.loads(annotation_errors)
+        annotation_errors = defaultdict(list)
+        for sample in dataset:
+            sample_annotation_errors = sample.get_field("annotation_errors")
+            for key, value in sample_annotation_errors.items():
+                annotation_errors[key].extend(value)
         table_data = []
         traces = []
         for key, values in annotation_errors.items():
