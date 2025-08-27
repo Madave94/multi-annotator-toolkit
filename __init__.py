@@ -1855,6 +1855,7 @@ class RunErrorAnalysis(foo.Operator):
                 fo.DictField,
                 embedded_doc_type=fo.ListField
             )
+            dataset.save()
 
             all_matches = defaultdict(list)
 

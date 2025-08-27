@@ -1,7 +1,7 @@
 name: "@madave94/multi_annotator_toolkit"
 type: plugin
 author: David Tschirschwitz
-version: 0.4.4
+version: 0.5.0
 url: https://github.com/Madave94/multi-annotator-toolkit
 license: Apache 2.0
 description: Multi Annotator Toolkit
