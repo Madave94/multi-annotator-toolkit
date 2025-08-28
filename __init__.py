@@ -424,6 +424,25 @@ def split_annotations_by_rater(dataset, source_field: str, field_prefix: str =No
     annotations_unassigned = 0
     samples_processed = 0
 
+    # Get the source field's type from the dataset schema once
+    source_field_doc_type = dataset.get_field(source_field).document_type
+
+    all_raters = set()
+    for rater_list in dataset.values("rater_list"):
+        all_raters.update(rater_list)
+
+    # Ensure field exists in dataset schema -> executed only once for the entire dataset per field
+    # this needs to be done so that empty images are still added
+    for rater_id in all_raters:
+        sanitized_rater_id = _sanitize_for_field_name(rater_id).replace('.', '_')
+        field_name = f"{field_prefix}{sanitized_rater_id.replace('.', '_')}"
+        if not dataset.has_sample_field(field_name):
+            dataset.add_sample_field(
+                field_name,
+                fo.EmbeddedDocumentField,
+                embedded_doc_type=source_field_doc_type
+            )
+
     # Process each sample
     for sample in tqdm(dataset, desc=f"Processing {source_field}"):
         original_rater_list = sample.get_field("rater_list")
@@ -432,50 +451,41 @@ def split_annotations_by_rater(dataset, source_field: str, field_prefix: str =No
         sanitized_rater_list = [_sanitize_for_field_name(r) for r in original_rater_list]
         sample.rater_list = sanitized_rater_list
 
-        annotations: fol.Label = sample.get_field(source_field)
-        if annotations is None:
-            continue
-
-        # Determine the attribute to access based on field type
-        if isinstance(annotations, fo.Detections):
-            annotations_list: AnnotationList = annotations.detections
-        elif isinstance(annotations, fo.Polylines):
-            annotations_list: AnnotationList = annotations.polylines
-        else:
-            raise Exception("Invalid annotations type processed. Should be detections or polylines.")
-
         # Initialize per-rater annotations dict
         annotations_by_rater = {sanitized_id: [] for sanitized_id in sanitized_rater_list}
         unassigned_annotations = []
 
-        # Process annotations
-        for annotation in annotations_list:
-            original_rater_id = annotation.get_field('rater_id')
-            if not original_rater_id:
-                raise Exception(f"Missing 'rater_id' for {sample.filepath}.")
-            sanitized_rater_id = _sanitize_for_field_name(original_rater_id)
-            annotation.rater_id = sanitized_rater_id
+        annotations: fol.Label = sample.get_field(source_field)
 
-            total_annotations += 1
-            if sanitized_rater_id in annotations_by_rater:
-                annotations_by_rater[sanitized_rater_id].append(annotation)
-                annotations_moved += 1
+        # Determine the attribute to access based on field type
+        if annotations is not None:
+            if isinstance(annotations, fo.Detections):
+                annotations_list: AnnotationList = annotations.detections
+            elif isinstance(annotations, fo.Polylines):
+                annotations_list: AnnotationList = annotations.polylines
             else:
-                unassigned_annotations.append(annotation)
-                annotations_unassigned += 1
+                raise TypeError(f"Unsupported label type {type(annotations)}.")
 
+            # Process annotations
+            for annotation in annotations_list:
+                original_rater_id = annotation.get_field('rater_id')
+                if not original_rater_id:
+                    raise ValueError(f"Missing 'rater_id' for annotation in {sample.filepath}")
+                sanitized_rater_id = _sanitize_for_field_name(original_rater_id)
+                annotation.rater_id = sanitized_rater_id
+                total_annotations += 1
+
+                if sanitized_rater_id in annotations_by_rater:
+                    annotations_by_rater[sanitized_rater_id].append(annotation)
+                    annotations_moved += 1
+                else:
+                    unassigned_annotations.append(annotation)
+                    annotations_unassigned += 1
 
         # Assign per-rater annotations to new fields
-        for rater_id, ann_list in annotations_by_rater.items():
-            sanitized_rater_id = rater_id.replace('.', '_')
-            field_name = f"{field_prefix}{sanitized_rater_id}"
-            # Ensure field exists in dataset schema -> executed only once for the entire dataset per field
-            if not dataset.has_sample_field(field_name):
-                dataset.add_sample_field(
-                    field_name,
-                    fo.EmbeddedDocumentField,
-                    embedded_doc_type=type(annotations)
-                )
+        for rater_id in sanitized_rater_list:
+            ann_list = annotations_by_rater.get(rater_id, [])
+            field_name = f"{field_prefix}{rater_id}"
             if ann_list:
                 if isinstance(annotations, fo.Detections):
                     sample[field_name] = fo.Detections(detections=ann_list)
@@ -484,7 +494,7 @@ def split_annotations_by_rater(dataset, source_field: str, field_prefix: str =No
                 else:
                     raise Exception("Invalid annotations type processed. Should be detections or polylines.")
             else:
-                sample[field_name] = None  # Clear field if empty
+                sample[field_name] = source_field_doc_type()
 
         # Handle unassigned annotations
         if unassigned_annotations:
