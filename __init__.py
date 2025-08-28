@@ -20,6 +20,7 @@ from fiftyone.operators import types
 from fiftyone import ViewField as F
 import fiftyone.utils.iou as foui
 import fiftyone.core.labels as fol
+from pymongo.errors import DocumentTooLarge
 
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
@@ -1802,9 +1803,9 @@ class RunErrorAnalysis(foo.Operator):
             dark_icon="/assets/icon-dark.svg",
         )
 
-    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False, recalculate=True):
+    def __call__(self, sample_collection, annotation_type, iou_thresholds, delegate=False, recalculate=True, cache_path=None):
         ctx = dict(view=sample_collection.view())
-        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate, api_call=True, recalculate=recalculate)
+        params = dict(annotation_type=annotation_type, iou_thresholds=iou_thresholds, delegate=delegate, api_call=True, recalculate=recalculate, cache_path=cache_path)
         return foo.execute_operator(self.uri, ctx, params=params)
 
     def resolve_input(self, ctx):
@@ -1860,32 +1861,74 @@ class RunErrorAnalysis(foo.Operator):
             iou_thresholds = ctx.params.get("iou_thresholds")
             recalculate = ctx.params.get("recalculate")
 
-            dataset.add_sample_field(
-                "annotation_errors",
-                fo.DictField,
-                embedded_doc_type=fo.ListField
-            )
-            dataset.save()
+            # Allow user to override the cache path, otherwise use the default
+            cache_path = ctx.params.get("cache_path", None)
+            if cache_path:
+                base_results_dir = cache_path
+            else:
+                base_results_dir = os.path.join(os.path.expanduser("~"), ".fiftyone", "plugin_cache",
+                                                "error_analysis_results")
+
+            dataset_results_dir = os.path.join(base_results_dir, dataset.name)
+
+            known_fields = set(dataset.get_field_schema().keys())  # For efficiency
+            for iou in iou_thresholds:
+                key = f"{ann_type}@{iou}"
+                field_name = f"errors_{key.replace('.', '_').replace(' ', '_')}"
+                if field_name not in known_fields:
+                    dataset.add_sample_field(field_name, fo.Field)
+                    known_fields.add(field_name)
 
             all_matches = defaultdict(list)
+            samples_with_external_data = 0
 
-            samples_not_able_to_process = 0
-            for sample in tqdm(dataset, desc=f"Calculating {ann_type} annotation errors"):
-                # check missing calculations for the case of recalculation=False
+            for sample in tqdm(dataset, desc=f"Calculating {ann_type} annotation errors for {dataset.name}"):
+
+                ## 1. Updated Recalculation Check
                 calc_iou_thresholds = []
                 for iou_threshold in iou_thresholds:
-                    if recalculate or str(ann_type) + "@" + str(iou_threshold) not in sample.get_field("annotation_errors"):
+                    key = f"{ann_type}@{iou_threshold}"
+                    field_name = f"errors_{key.replace('.', '_').replace(' ', '_')}"
+
+                    # Decide whether to calculate based on the new granular field structure
+                    if recalculate or not sample.has_field(field_name) or sample[field_name] is None:
                         calc_iou_thresholds.append(iou_threshold)
+
+                # If there's nothing new to calculate for this sample, skip it
+                if not calc_iou_thresholds:
+                    continue
+
+                ## 2. Run Analysis for required thresholds
                 matches = self.analyse_sample(ctx, sample, ann_type, calc_iou_thresholds)
-                for iou_threshold in calc_iou_thresholds:
-                    all_matches[str(ann_type) + "@" + str(iou_threshold)] += matches[str(ann_type) + "@" + str(iou_threshold)]
-                serialized_matches: dict = sample.get_field("annotation_errors")
-                if serialized_matches is not None:
-                    serialized_matches.update(serialize_all_matches(matches))
-                else:
-                    serialized_matches = serialize_all_matches(matches)
-                sample.set_field("annotation_errors", serialized_matches)
-                sample.save()
+
+                ## 3. Granular Saving Loop with Fallback for data above the mongo db threshold
+                for key, results_list in matches.items():
+                    all_matches[key].extend(results_list)
+                    field_name = f"errors_{key.replace('.', '_').replace(' ', '_')}"
+
+                    results_list = serialize_all_matches(results_list)
+                    try:
+                        sample[field_name] = results_list
+                        sample.save()
+                    except DocumentTooLarge:
+                        samples_with_external_data += 1
+
+                        # 1. On-demand directory creation
+                        os.makedirs(dataset_results_dir, exist_ok=True)
+
+                        file_name = f"{sample.id}_{key}.json"
+                        file_path = os.path.join(dataset_results_dir, file_name)
+
+                        # 2. More informative warning message
+                        print(f"\nWarning: Result '{key}' for sample {sample.id} is too large. "
+                              f"Saving to external file:\n{file_path}")
+
+                        with open(file_path, "w") as f:
+                            json.dump(results_list, f)
+
+                        pointer = {"external_file": file_path}
+                        sample[field_name] = pointer
+                        sample.save()
 
             message = f"Error Analysis Results on {ann_type}:    \n"
             error_counter = defaultdict(int)
@@ -1897,9 +1940,9 @@ class RunErrorAnalysis(foo.Operator):
             for key, val in error_counter.items():
                 message += str(key) + ": " + str(val) + "    \n"
 
-            if samples_not_able_to_process > 0:
-                message += f"Issue with {samples_not_able_to_process} samples. They have not been processed and are excluded from " \
-                           f"the annotation error calculation. If you are using masks, try switching to polygons."
+            if samples_with_external_data > 0:
+                message += (f"\nNote: {samples_with_external_data} result(s) were too large and stored externally in:\n"
+                            f"{dataset_results_dir}")
 
             dataset.save()
 
@@ -2334,6 +2377,75 @@ class RunErrorAnalysis(foo.Operator):
         sample.save()
         return matches
 
+
+import os
+import json
+from collections import defaultdict
+
+
+def load_error_analysis_results(dataset):
+    """
+    Discovers and loads all error analysis results from a dataset.
+
+    This function automatically finds all fields matching the 'errors_*'
+    pattern and correctly handles results stored in the database or in
+    external JSON files.
+
+    Args:
+        dataset: a fiftyone.core.dataset.Dataset
+
+    Returns:
+        a defaultdict containing the aggregated error analysis results.
+    """
+    print("Discovering and loading all annotation error results...")
+    all_results = defaultdict(list)
+    schema = dataset.get_field_schema()
+
+    # 1. Discover all error fields and map them back to their original keys
+    error_fields_to_keys = {}
+    for field_name in schema:
+        if field_name.startswith("errors_"):
+            # Reconstruct: "errors_bounding_box_0_5" -> "bounding box@0.5"
+            key_part = field_name[len("errors_"):]
+            last_underscore_index = key_part.rfind('_')
+
+            if last_underscore_index == -1:
+                continue  # Skip malformed field names
+
+            sanitized_ann_type = key_part[:last_underscore_index]
+            sanitized_iou = key_part[last_underscore_index + 1:]
+
+            ann_type = sanitized_ann_type.replace('_', ' ')
+            iou = sanitized_iou.replace('_', '.')
+            original_key = f"{ann_type}@{iou}"
+            error_fields_to_keys[field_name] = original_key
+
+    if not error_fields_to_keys:
+        print("No annotation error fields found in dataset.")
+        return all_results
+
+    # 2. Iterate through samples once, loading data from all discovered fields
+    for sample in tqdm(dataset.view(), desc="Aggregating results"):
+        for field_name, key in error_fields_to_keys.items():
+            if sample.has_field(field_name):
+                data = sample[field_name]
+
+                if data is None:
+                    continue
+
+                if isinstance(data, dict) and "external_file" in data:
+                    file_path = data["external_file"]
+                    try:
+                        with open(file_path, 'r') as f:
+                            loaded_data = json.load(f)
+                            all_results[key].extend(loaded_data)
+                    except FileNotFoundError:
+                        print(f"Warning: Could not find external file: {file_path}")
+                else:
+                    all_results[key].extend(data)
+
+    return all_results
+
 class AnnotationError():
     def __init__(self, sample_id: str, rater_a: str, rater_b: str, errors: list, iou_threshold, cls_a=None, cls_b=None,
                  iou=None, id_a=None, id_b=None, child_ids=None, loc_a: list = None, loc_b: list = None):
@@ -2627,11 +2739,8 @@ class ErrorAnalysisPanel(foo.Panel):
             "mu": "#B77542"
         }
         dataset = ctx.dataset
-        annotation_errors = defaultdict(list)
-        for sample in dataset:
-            sample_annotation_errors = sample.get_field("annotation_errors")
-            for key, value in sample_annotation_errors.items():
-                annotation_errors[key].extend(value)
+        annotation_errors = load_error_analysis_results(dataset)
+
         table_data = []
         traces = []
         for key, values in annotation_errors.items():
