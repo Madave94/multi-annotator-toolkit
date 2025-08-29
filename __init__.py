@@ -20,7 +20,7 @@ from fiftyone.operators import types
 from fiftyone import ViewField as F
 import fiftyone.utils.iou as foui
 import fiftyone.core.labels as fol
-from pymongo.errors import DocumentTooLarge
+from pymongo.errors import DocumentTooLarge, WriteError
 
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
@@ -1906,10 +1906,9 @@ class RunErrorAnalysis(foo.Operator):
                     all_matches[key].extend(results_list)
                     field_name = f"errors_{key.replace('.', '_').replace(' ', '_')}"
 
-                    results_list = serialize_all_matches(results_list)
+                    serializable_results = serialize_all_matches(results_list)
                     try:
-                        sample[field_name] = results_list
-                        sample.save()
+                        dataset.set_values(field_name, {sample.id: serializable_results}, key_field="id")
                     except DocumentTooLarge:
                         samples_with_external_data += 1
 
@@ -1927,8 +1926,7 @@ class RunErrorAnalysis(foo.Operator):
                             json.dump(results_list, f)
 
                         pointer = {"external_file": file_path}
-                        sample[field_name] = pointer
-                        sample.save()
+                        dataset.set_values(field_name, {sample.id: serializable_results}, key_field="id")
 
             message = f"Error Analysis Results on {ann_type}:    \n"
             error_counter = defaultdict(int)
