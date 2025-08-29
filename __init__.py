@@ -1909,7 +1909,7 @@ class RunErrorAnalysis(foo.Operator):
                     serializable_results = serialize_all_matches(results_list)
                     try:
                         dataset.set_values(field_name, {sample.id: serializable_results}, key_field="id")
-                    except DocumentTooLarge:
+                    except (DocumentTooLarge, WriteError, ValueError):
                         samples_with_external_data += 1
 
                         # 1. On-demand directory creation
@@ -1923,10 +1923,10 @@ class RunErrorAnalysis(foo.Operator):
                               f"Saving to external file:\n{file_path}")
 
                         with open(file_path, "w") as f:
-                            json.dump(results_list, f)
+                            json.dump(serializable_results, f)
 
                         pointer = {"external_file": file_path}
-                        dataset.set_values(field_name, {sample.id: serializable_results}, key_field="id")
+                        dataset.set_values(field_name, {sample.id: pointer}, key_field="id")
 
             message = f"Error Analysis Results on {ann_type}:    \n"
             error_counter = defaultdict(int)
