@@ -2405,7 +2405,7 @@ class RunErrorAnalysis(foo.Operator):
                 getattr(sample[field_name], element_field).extend(instances)
 
             sample.save()
-            print(f"Saved sample as fallback since it's to large for rich information storing.")
+            print(f"Saved sample {sample.id} as fallback since it's to large for rich information storing.")
 
         return matches
 
