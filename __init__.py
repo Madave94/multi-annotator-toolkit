@@ -1973,6 +1973,8 @@ class RunErrorAnalysis(foo.Operator):
 
     def analyse_sample(self, ctx, sample, ann_type, iou_thresholds):
         matches = defaultdict(list)
+        newly_merged_instances = defaultdict(list)
+
         merged_id_list = []
         image_shape = sample.metadata.height, sample.metadata.width
         iscrowd = lambda l: bool(l.get_attribute_value("iscrowd", False))
@@ -2372,14 +2374,40 @@ class RunErrorAnalysis(foo.Operator):
                                 )
                                 det_b.set_field(ae_key(iou_threshold, rater_a), "mi")
 
-        sample.save()
+            for ann in annotations_a:
+                if ann not in newly_merged_instances[ann_field_a] and "merged" in ann.tags:
+                    newly_merged_instances[ann_field_a].append(ann)
+            for ann in annotations_b:
+                if ann not in newly_merged_instances[ann_field_b] and "merged" in ann.tags:
+                    newly_merged_instances[ann_field_b].append(ann)
+
+        for field_name, new_instances in newly_merged_instances.items():
+            getattr(sample[field_name], element_field).extend(new_instances)
+
+        try:
+            # Attempt to save the samples with rich data
+            sample.save()
+        except (DocumentTooLarge, WriteError, ValueError):
+            # Fallback if the data is to large, focus only on the essentials.
+            sample.reload()
+            clean_new_instances = defaultdict(list)
+            for field_name, new_instances in newly_merged_instances.items():
+                for ann in new_instances:
+                    # Create a clone and surgically remove only the tracking fields
+                    clean_clone = ann.copy()
+                    for field in list(clean_clone.field_names):
+                        # This condition should match the fields you add for tracking
+                        if field.startswith(f"{ann_type}_"):
+                            clean_clone.clear_field(field)
+                    clean_new_instances[field_name].append(clean_clone)
+
+            for field_name, instances in clean_new_instances.items():
+                getattr(sample[field_name], element_field).extend(instances)
+
+            sample.save()
+            print(f"Saved sample as fallback since it's to large for rich information storing.")
+
         return matches
-
-
-import os
-import json
-from collections import defaultdict
-
 
 def load_error_analysis_results(dataset):
     """
