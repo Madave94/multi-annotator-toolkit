@@ -2433,13 +2433,12 @@ def load_error_analysis_results(dataset):
         if field_name.startswith("errors_"):
             # Reconstruct: "errors_bounding_box_0_5" -> "bounding box@0.5"
             key_part = field_name[len("errors_"):]
-            last_underscore_index = key_part.rfind('_')
+            parts = key_part.split('@')
 
-            if last_underscore_index == -1:
-                continue  # Skip malformed field names
+            if len(parts) != 2:
+                raise Exception(f"Wrong error format, for {field_name}.")
 
-            sanitized_ann_type = key_part[:last_underscore_index]
-            sanitized_iou = key_part[last_underscore_index + 1:]
+            sanitized_ann_type, sanitized_iou = parts
 
             ann_type = sanitized_ann_type.replace('_', ' ')
             iou = sanitized_iou.replace('_', '.')
