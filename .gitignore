@@ -1,5 +1,19 @@
-*.ipynb
-.ipynb_checkpoints
-.idea
+# Python / packaging
 __pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Notebooks & IDEs
+*.ipynb
+.ipynb_checkpoints/
+.idea/
+.vscode/
+
+# Local scratch
 runner*.py
+GEMINI.md

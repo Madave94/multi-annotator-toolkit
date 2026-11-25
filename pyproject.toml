@@ -1,0 +1,17 @@
+[project]
+name = "multi-annotator-toolkit"
+version = "0.6.0"
+description = "Annotator UI, auto-labeling review, and KαLOS consensus analysis built on FiftyOne."
+readme = "README.md"
+authors = [
+    { name = "David Tschirschwitz", email = "david.tschirschwitz@uni-weimar.de" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+multi-annotator-toolkit = "multi_annotator_toolkit:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"

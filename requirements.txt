@@ -1,5 +1,0 @@
-numpy
-tqdm
-shapely
-pycocotools
-kalphacv
