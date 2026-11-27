@@ -7,5 +7,10 @@ license: Apache 2.0
 description: Multi-Annotator Toolkit — Annotator UI, auto-labeling review, and KαLOS consensus analysis on FiftyOne.
 fiftyone:
   version: ">=1.22.0"
-operators: []
-panels: []
+operators:
+  - run_principled_config
+  - run_kalos
+  - export_kalos_report
+  - assign_job
+panels:
+  - kalos_panel

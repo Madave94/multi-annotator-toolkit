@@ -17,3 +17,5 @@ build/
 # Local scratch
 runner*.py
 GEMINI.md
+.mat_demo_images/
+uv.lock
