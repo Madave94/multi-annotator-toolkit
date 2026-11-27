@@ -22,7 +22,7 @@ from multi_annotator_toolkit.schema import (
     ASSIGNED_ENTITIES_FIELD,
     ENTITY_LIST_FIELD,
     ENTITY_SESSIONS_FIELD,
-    TRIAGE_FIELD,
+    TAGGING_FIELD,
     VALID_TASKS,
     TaskType,
     ensure_dataset_schema,
@@ -92,7 +92,7 @@ def import_yolo(
             "filepath": str(img_path.resolve()),
             ENTITY_SESSIONS_FIELD: {},
             ASSIGNED_ENTITIES_FIELD: [],
-            TRIAGE_FIELD: {},
+            TAGGING_FIELD: {},
         }
 
         for edir in entity_dirs:

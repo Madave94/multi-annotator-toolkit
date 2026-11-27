@@ -169,7 +169,6 @@ def test_fiftyone_plugin_loads_cleanly():
             "run_principled_config",
             "run_kalos",
             "export_kalos_report",
-            "assign_job",
             "kalos_panel",
         }
     finally:
@@ -314,14 +313,7 @@ def test_kalos_panel_and_operators_execution(temp_dataset, tmp_path):
     assert Path(written["vitality_csv"]).is_file()
     assert Path(written["lsa_csv"]).is_file()
 
-    # 3. AssignJob operator
-    job_op = plugin_mod.AssignJob()
-    job_ctx = _make_ctx(params={"entity_ids": "dave, eve", "job_tag": "job:q1"})
-    job_res = job_op.execute(job_ctx)
-    assert job_res["assigned_samples"] == 2
-    assert "dave" in temp_dataset[s1.id]["assigned_entities"]
-
-    # 4. KaLOSPanel across all 5 view modes — verify explicit pixel height & non-empty data
+    # 3. KaLOSPanel across all view modes — verify explicit pixel height & non-empty data
     panel_obj = plugin_mod.KaLOSPanel()
     panel_ctx = _make_ctx()
     panel_obj.on_load(panel_ctx)

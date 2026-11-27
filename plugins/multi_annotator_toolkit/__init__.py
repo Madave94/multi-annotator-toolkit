@@ -1,4 +1,4 @@
-"""Thin FiftyOne plugin for Multi-Annotator Toolkit (KαLOS IAA, Principled Config, Export, Jobs)."""
+"""Thin FiftyOne plugin for Multi-Annotator Toolkit (pure KαLOS diagnostics)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ import fiftyone.operators as foo
 import fiftyone.operators.categories as focat
 import fiftyone.operators.types as types
 
-from multi_annotator_toolkit.annotations import assign_entities
 from multi_annotator_toolkit.kalos_adapter import (
     DEFAULT_THRESHOLD_FUNC,
     KALOS_ALPHA_FIELD,
@@ -634,45 +633,6 @@ class ExportKaLOSReport(foo.Operator):
             variant="success",
         )
         return written
-
-
-class AssignJob(foo.Operator):
-    @property
-    def config(self):
-        return foo.OperatorConfig(
-            name="assign_job",
-            label="Assign Entities / Create Job",
-            description="Assign entities to all samples in the current FiftyOne view.",
-            **_OPERATOR_ICON_KWARGS,
-        )
-
-    def resolve_input(self, ctx):
-        inputs = types.Object()
-        inputs.str(
-            "entity_ids",
-            label="Entity IDs (comma-separated)",
-            description="e.g. alice, bob",
-            required=True,
-        )
-        inputs.str(
-            "job_tag",
-            label="Job Tag (optional)",
-            description="e.g. job:batch_1",
-            required=False,
-        )
-        return types.Property(inputs)
-
-    def execute(self, ctx):
-        raw_ids = ctx.params["entity_ids"]
-        entity_ids = [e.strip() for e in raw_ids.split(",") if e.strip()]
-        job_tag = (ctx.params.get("job_tag") or "").strip() or None
-        count = assign_entities(ctx.view, entity_ids, job_tag=job_tag)
-        ctx.ops.reload_dataset()
-        ctx.ops.notify(
-            f"Assigned {len(entity_ids)} entity/entities to {count} sample(s).",
-            variant="success",
-        )
-        return {"assigned_samples": count, "entity_ids": entity_ids, "job_tag": job_tag}
 
 
 class KaLOSPanel(foo.Panel):
@@ -1435,5 +1395,4 @@ def register(plugin):
     plugin.register(RunPrincipledConfig)
     plugin.register(RunKaLOS)
     plugin.register(ExportKaLOSReport)
-    plugin.register(AssignJob)
     plugin.register(KaLOSPanel)

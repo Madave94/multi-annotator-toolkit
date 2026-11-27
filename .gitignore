@@ -18,4 +18,5 @@ build/
 runner*.py
 GEMINI.md
 .mat_demo_images/
+.mat_users.db*
 uv.lock

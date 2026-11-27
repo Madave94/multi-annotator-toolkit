@@ -18,7 +18,12 @@ from multi_annotator_toolkit.annotations import (
     mark_entity_completed,
     set_sample_detections,
     set_sample_polylines,
-    set_sample_triage,
+    set_sample_tagging,
+)
+from multi_annotator_toolkit.jobs import (
+    DEFAULT_TAGGING_SCHEMA,
+    create_job,
+    set_tagging_schema,
 )
 from multi_annotator_toolkit.schema import (
     ENTITY_LIST_FIELD,
@@ -203,11 +208,11 @@ def build_mini_dataset(
     ]
 
     sample_ids: list[str] = []
-    for fname, shapes, triage in scenes:
-        img_path = _draw_scene(img_root / fname, shapes, blurry=bool(triage.get("blurry", False)))
+    for fname, shapes, tagging in scenes:
+        img_path = _draw_scene(img_root / fname, shapes, blurry=bool(tagging.get("blurry", False)))
         sample = fo.Sample(filepath=str(img_path))
         dataset.add_sample(sample)
-        set_sample_triage(dataset, sample.id, triage, tags=["triage:usable"])
+        set_sample_tagging(dataset, sample.id, tagging, tags=["tagging:usable"])
         sample_ids.append(sample.id)
 
     # Scene 1: high agreement across alvin, simon, theodore + auto_accepted model_yolo
@@ -291,6 +296,30 @@ def build_mini_dataset(
     assign_entities(dataset.select(sample_ids[:2]), ["dave"], job_tag="job:review_batch")
 
     dataset.default_classes = ["crack", "rebar", "spalling"]
+    set_tagging_schema(dataset, DEFAULT_TAGGING_SCHEMA)
+    create_job(
+        dataset,
+        job_id="demo_tagging",
+        name="Concrete Image Tagging",
+        task_type="tagging",
+        entity_ids=["alvin", "dave"],
+    )
+    create_job(
+        dataset,
+        job_id="demo_bbox",
+        name="Defect Bounding Boxes",
+        task_type="bbox",
+        entity_ids=["alvin", "simon", "theodore", "dave"],
+        classes=["crack", "rebar", "spalling"],
+    )
+    create_job(
+        dataset,
+        job_id="demo_segm",
+        name="Defect Polygons",
+        task_type="segm",
+        entity_ids=["alvin", "simon", "theodore", "dave"],
+        classes=["crack", "rebar", "spalling"],
+    )
     dataset.save()
     return dataset
 

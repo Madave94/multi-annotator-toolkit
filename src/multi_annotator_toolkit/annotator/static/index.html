@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multi-Annotator Toolkit — Annotator UI</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header id="topbar" class="topbar hidden">
+    <div class="topbar-left">
+      <span class="brand">MAT Annotator</span>
+      <span id="dataset-badge" class="badge badge-muted"></span>
+      <nav id="nav-tabs" class="nav-tabs">
+        <button data-nav="jobs" class="nav-btn active">My Jobs</button>
+        <button data-nav="admin" id="nav-admin" class="nav-btn hidden">Admin</button>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <span id="user-badge" class="badge"></span>
+      <button id="btn-logout" class="btn btn-ghost">Logout</button>
+    </div>
+  </header>
+
+  <main id="app-root">
+    <!-- Login View -->
+    <section id="view-login" class="center-view">
+      <form id="login-form" class="card login-card">
+        <h1>MAT Annotator UI</h1>
+        <p class="muted">Sign in with your assigned entity credentials.</p>
+        <label>Username (entity_id)
+          <input id="login-user" type="text" autocomplete="username" required />
+        </label>
+        <label>Password
+          <input id="login-pass" type="password" autocomplete="current-password" required />
+        </label>
+        <div id="login-error" class="error-msg hidden"></div>
+        <button type="submit" class="btn btn-primary full-width">Sign In</button>
+      </form>
+    </section>
+
+    <!-- My Jobs View -->
+    <section id="view-jobs" class="page-view hidden">
+      <div class="section-header">
+        <h2>My Assigned Jobs</h2>
+        <button id="btn-refresh-jobs" class="btn btn-ghost">Refresh</button>
+      </div>
+      <div id="jobs-grid" class="jobs-grid"></div>
+    </section>
+
+    <!-- Admin View -->
+    <section id="view-admin" class="page-view hidden">
+      <div class="admin-grid">
+        <div class="card">
+          <h3>Users</h3>
+          <form id="admin-create-user" class="inline-form">
+            <input id="new-user-name" type="text" placeholder="username (entity_id)" required />
+            <input id="new-user-pass" type="password" placeholder="password" required />
+            <select id="new-user-role">
+              <option value="annotator">annotator</option>
+              <option value="admin">admin</option>
+            </select>
+            <button type="submit" class="btn btn-primary">Create</button>
+          </form>
+          <div id="admin-users-list" class="table-wrap"></div>
+        </div>
+
+        <div class="card">
+          <h3>Jobs &amp; Progress</h3>
+          <form id="admin-create-job" class="stack-form">
+            <div class="form-row">
+              <input id="new-job-name" type="text" placeholder="Job name" required />
+              <select id="new-job-task">
+                <option value="tagging">tagging</option>
+                <option value="bbox">bbox</option>
+                <option value="segm">segm</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <select id="new-job-tag" title="Sample subset (FiftyOne tag)"></select>
+              <input id="new-job-session" type="text" placeholder="session_id (optional)" />
+            </div>
+            <div>
+              <div class="muted" style="margin-bottom:6px;">Assign users:</div>
+              <div id="new-job-users" class="choice-row"></div>
+            </div>
+            <button type="submit" class="btn btn-primary">Create Job</button>
+          </form>
+          <div id="admin-jobs-list" class="table-wrap"></div>
+        </div>
+
+        <div class="card full-span">
+          <div class="section-header">
+            <h3>Active Project Schema (Read-Only)</h3>
+            <span class="muted">Edit <code>project.yaml</code> and run <code>uv run mat-config --config project.yaml</code> to update.</span>
+          </div>
+          <pre id="admin-project-schema" class="code-area"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Workspace View (Tagging OR BBox OR Polygon) -->
+    <section id="view-workspace" class="workspace hidden">
+      <aside class="gallery-pane">
+        <div class="gallery-header">
+          <button id="btn-back-jobs" class="btn btn-ghost btn-sm">← Jobs</button>
+          <span id="ws-job-title" class="ws-title"></span>
+        </div>
+        <div class="filter-bar">
+          <button data-filter="all" class="pill active">All</button>
+          <button data-filter="pending" class="pill">Pending</button>
+          <button data-filter="done" class="pill">Done</button>
+        </div>
+        <div id="gallery-list" class="gallery-list"></div>
+      </aside>
+
+      <div class="stage-pane">
+        <div id="class-bar" class="class-bar hidden"></div>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="ann-canvas"></canvas>
+          <img id="tagging-img" class="tagging-img hidden" alt="Sample" />
+          <div id="review-popover" class="popover hidden"></div>
+        </div>
+        <div class="toolbar">
+          <div class="toolbar-left">
+            <span id="ws-sample-name" class="muted"></span>
+            <span id="ws-save-status" class="save-status"></span>
+          </div>
+          <div class="toolbar-right" id="ws-toolbar-actions">
+            <button id="btn-zoom-out" class="btn btn-ghost btn-sm">−</button>
+            <button id="btn-zoom-reset" class="btn btn-ghost btn-sm">1.0×</button>
+            <button id="btn-zoom-in" class="btn btn-ghost btn-sm">+</button>
+            <button id="btn-finish-poly" class="btn btn-secondary btn-sm hidden">Finish Polygon</button>
+            <button id="btn-delete-selected" class="btn btn-danger btn-sm hidden">Delete Selected</button>
+            <button id="btn-complete" class="btn btn-success btn-sm">Mark Complete &amp; Next (Enter)</button>
+          </div>
+        </div>
+      </div>
+
+      <aside id="tagging-pane" class="tagging-pane hidden">
+        <h3>Image Tagging</h3>
+        <div id="tagging-fields" class="tagging-fields"></div>
+        <button id="btn-tagging-save" class="btn btn-success full-width">Save &amp; Next (Enter)</button>
+      </aside>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

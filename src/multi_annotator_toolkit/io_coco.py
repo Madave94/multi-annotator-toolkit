@@ -14,7 +14,7 @@ from multi_annotator_toolkit.schema import (
     ASSIGNED_ENTITIES_FIELD,
     ENTITY_LIST_FIELD,
     ENTITY_SESSIONS_FIELD,
-    TRIAGE_FIELD,
+    TAGGING_FIELD,
     VALID_TASKS,
     TaskType,
     ensure_dataset_schema,
@@ -170,7 +170,7 @@ def import_coco(
             ENTITY_LIST_FIELD: elist,
             ENTITY_SESSIONS_FIELD: esessions,
             ASSIGNED_ENTITIES_FIELD: list(elist),
-            TRIAGE_FIELD: {},
+            TAGGING_FIELD: {},
             "coco_image_id": img_id,
         }
 

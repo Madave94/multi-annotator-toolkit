@@ -11,7 +11,7 @@ from multi_annotator_toolkit.schema import (
     ASSIGNED_ENTITIES_FIELD,
     ENTITY_LIST_FIELD,
     ENTITY_SESSIONS_FIELD,
-    TRIAGE_FIELD,
+    TAGGING_FIELD,
     EntityType,
     ensure_dataset_schema,
     ensure_entity_field,
@@ -255,18 +255,18 @@ def assign_entities(
     return count
 
 
-def set_sample_triage(
+def set_sample_tagging(
     dataset: fo.Dataset,
     sample_id: str,
-    triage_values: dict,
+    tagging_values: dict,
     tags: list[str] | None = None,
 ) -> None:
-    """Update image-level triage metadata (and optional FiftyOne tags) on a sample."""
+    """Update structured image-level tagging metadata (and optional FiftyOne tags) on a sample."""
     ensure_dataset_schema(dataset)
     sample = dataset[sample_id]
-    current = dict(sample[TRIAGE_FIELD] or {})
-    current.update(triage_values)
-    sample[TRIAGE_FIELD] = current
+    current = dict(sample[TAGGING_FIELD] or {})
+    current.update(tagging_values)
+    sample[TAGGING_FIELD] = current
     if tags is not None:
         sample.tags = list(dict.fromkeys(tags))
     sample.save()

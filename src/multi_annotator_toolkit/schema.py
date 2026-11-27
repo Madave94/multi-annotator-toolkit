@@ -19,7 +19,7 @@ ALL_STATUSES: frozenset[str] = VERIFIED_STATUSES | frozenset({"auto_unverified"}
 ENTITY_LIST_FIELD = "entity_list"
 ENTITY_SESSIONS_FIELD = "entity_sessions"
 ASSIGNED_ENTITIES_FIELD = "assigned_entities"
-TRIAGE_FIELD = "triage"
+TAGGING_FIELD = "tagging"
 ENTITY_REGISTRY_KEY = "mat_entities"
 
 _SANITIZE_RE = re.compile(r"[^a-zA-Z0-9]+")
@@ -69,8 +69,8 @@ def ensure_dataset_schema(dataset: fo.Dataset) -> fo.Dataset:
         dataset.add_sample_field(
             ASSIGNED_ENTITIES_FIELD, fo.ListField, subfield=fo.StringField
         )
-    if TRIAGE_FIELD not in schema:
-        dataset.add_sample_field(TRIAGE_FIELD, fo.DictField)
+    if TAGGING_FIELD not in schema:
+        dataset.add_sample_field(TAGGING_FIELD, fo.DictField)
     if ENTITY_REGISTRY_KEY not in dataset.info:
         dataset.info[ENTITY_REGISTRY_KEY] = {}
         dataset.save()

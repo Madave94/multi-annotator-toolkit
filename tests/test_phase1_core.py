@@ -14,7 +14,7 @@ from multi_annotator_toolkit import (
     ASSIGNED_ENTITIES_FIELD,
     ENTITY_LIST_FIELD,
     ENTITY_SESSIONS_FIELD,
-    TRIAGE_FIELD,
+    TAGGING_FIELD,
     assign_entities,
     ensure_dataset_schema,
     entity_field_name,
@@ -29,7 +29,7 @@ from multi_annotator_toolkit import (
     sanitize_identifier,
     set_sample_detections,
     set_sample_polylines,
-    set_sample_triage,
+    set_sample_tagging,
 )
 
 LVIS_JSON = Path(
@@ -125,9 +125,9 @@ def test_per_entity_crud_provenance_completion_and_triage(temp_dataset, tmp_path
     assert temp_dataset[sample.id][ASSIGNED_ENTITIES_FIELD] == ["alice", "bob"]
     assert "job:batch1" in temp_dataset[sample.id].tags
 
-    set_sample_triage(temp_dataset, sample.id, {"blurry": False, "gsd": 1.2}, tags=["triage:ok"])
-    assert temp_dataset[sample.id][TRIAGE_FIELD] == {"blurry": False, "gsd": 1.2}
-    assert temp_dataset[sample.id].tags == ["triage:ok"]
+    set_sample_tagging(temp_dataset, sample.id, {"blurry": False, "gsd": 1.2}, tags=["tagging:ok"])
+    assert temp_dataset[sample.id][TAGGING_FIELD] == {"blurry": False, "gsd": 1.2}
+    assert temp_dataset[sample.id].tags == ["tagging:ok"]
 
 
 def test_coco_roundtrip_and_verified_only_export(temp_dataset, tmp_path):
